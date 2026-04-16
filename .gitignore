@@ -51,3 +51,4 @@ data/
 .vscode/
 *.swp
 .ace-tool/
+.worktrees/
