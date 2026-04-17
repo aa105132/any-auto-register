@@ -1,14 +1,26 @@
 from __future__ import annotations
 
+import importlib
+
 from core.base_platform import Account, AccountStatus, BasePlatform, RegisterConfig
 from core.registration import OtpSpec, ProtocolMailboxAdapter, RegistrationResult
 from platforms.atxp.protocol_mailbox import AtxpProtocolMailboxWorker
 
-try:
-    from core.registry import register
-except Exception:  # pragma: no cover - 测试环境可选依赖缺失时降级
-    def register(cls):
-        return cls
+
+def _identity_register(cls):
+    return cls
+
+
+def _load_register(import_module=importlib.import_module):
+    try:
+        return import_module("core.registry").register
+    except ModuleNotFoundError as exc:  # pragma: no cover - 测试环境缺少可选依赖时降级
+        if getattr(exc, "name", "") != "sqlmodel":
+            raise
+        return _identity_register
+
+
+register = _load_register()
 
 
 @register

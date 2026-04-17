@@ -235,11 +235,113 @@ class AtxpPlatformTests(unittest.TestCase):
         )
         self.assertIsInstance(worker, worker_cls)
 
+    def test_platform_adapter_register_runner_and_result_mapper_wire_ctx_fields(self):
+        platform_cls = _load_attr(self, "platforms.atxp.plugin", "AtxpPlatform")
+        platform = platform_cls(RegisterConfig(extra={"mail_provider": "cfworker"}), mailbox=None)
+        adapter = platform.build_protocol_mailbox_adapter()
+
+        class _FakeWorker:
+            def __init__(self):
+                self.calls = []
+
+            def run(self, **kwargs):
+                self.calls.append(kwargs)
+                return {
+                    "email": kwargs["email"],
+                    "password": kwargs["password"],
+                    "account_id": "acct-1",
+                    "connection_string": "https://accounts.atxp.ai?connection_token=conn-1&account_id=acct-1",
+                    "connection_token": "conn-1",
+                    "privy_token": "privy-token",
+                    "refresh_token": "refresh-token",
+                }
+
+        worker = _FakeWorker()
+        otp_callback = lambda: "123456"
+        ctx = RegistrationContext(
+            platform_name="atxp",
+            platform_display_name="ATXP",
+            platform=platform,
+            identity=type("Identity", (), {"email": "demo@example.com"})(),
+            config=RegisterConfig(proxy="http://proxy.local:8080"),
+            email="demo@example.com",
+            password="mailbox-pass",
+            log_fn=lambda _message: None,
+        )
+        artifacts = type("Artifacts", (), {})()
+        artifacts.otp_callback = otp_callback
+
+        raw = adapter.register_runner(worker, ctx, artifacts)
+        mapped = adapter.result_mapper(ctx, raw)
+
+        self.assertEqual(
+            worker.calls,
+            [
+                {
+                    "email": "demo@example.com",
+                    "password": "mailbox-pass",
+                    "otp_callback": otp_callback,
+                }
+            ],
+        )
+        self.assertEqual(mapped.email, "demo@example.com")
+        self.assertEqual(mapped.password, "mailbox-pass")
+        self.assertEqual(mapped.user_id, "acct-1")
+        self.assertEqual(
+            mapped.token,
+            "https://accounts.atxp.ai?connection_token=conn-1&account_id=acct-1",
+        )
+
+    def test_load_register_only_falls_back_for_missing_optional_dependency(self):
+        plugin_module = importlib.import_module("platforms.atxp.plugin")
+
+        register = plugin_module._load_register(
+            import_module=lambda _name: (_ for _ in ()).throw(
+                ModuleNotFoundError("No module named 'sqlmodel'", name="sqlmodel")
+            )
+        )
+
+        class _Demo:
+            pass
+
+        self.assertIs(register(_Demo), _Demo)
+
+    def test_load_register_reraises_unexpected_import_failure(self):
+        plugin_module = importlib.import_module("platforms.atxp.plugin")
+
+        with self.assertRaises(RuntimeError):
+            plugin_module._load_register(
+                import_module=lambda _name: (_ for _ in ()).throw(RuntimeError("boom"))
+            )
+
     def test_package_exports_expected_symbols(self):
         atxp_pkg = importlib.import_module("platforms.atxp")
         self.assertTrue(hasattr(atxp_pkg, "AtxpClient"))
         self.assertTrue(hasattr(atxp_pkg, "AtxpProtocolMailboxWorker"))
         self.assertTrue(hasattr(atxp_pkg, "AtxpPlatform"))
+
+
+class AtxpWorkerFailurePolicyTests(unittest.TestCase):
+    def test_worker_treats_gateway_probe_as_hard_dependency(self):
+        worker_cls = _load_attr(
+            self,
+            "platforms.atxp.protocol_mailbox",
+            "AtxpProtocolMailboxWorker",
+        )
+        fake_client = _FakeClient(clowdbot_error=None)
+
+        def _boom(_connection_string):
+            raise RuntimeError("gateway probe failed")
+
+        fake_client.probe_gateway_connection = _boom
+        worker = worker_cls(client=fake_client, log_fn=lambda _message: None)
+
+        with self.assertRaisesRegex(RuntimeError, "gateway probe failed"):
+            worker.run(
+                email="demo@example.com",
+                password="mailbox-pass",
+                otp_callback=lambda: "123456",
+            )
 
 
 if __name__ == "__main__":
