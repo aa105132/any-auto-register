@@ -34,6 +34,13 @@ PERSISTED_ACTION_DATA_KEYS = {
     "clientId",
     "clientSecret",
     "workspaceId",
+    "privy_token",
+    "account_id",
+    "connection_token",
+    "connection_string",
+    "wallet_address",
+    "clowdbot_instance_id",
+    "claimed_agent_email",
 }
 
 STATEFUL_ACTION_IDS = {"get_account_state", "switch_account"}
@@ -165,6 +172,50 @@ def _build_account_overview(platform: str, data: dict[str, Any]) -> dict[str, An
     return overview if len(overview) > 2 else None
 
 
+def _collect_runtime_patch_payload(
+    platform: str,
+    action_id: str,
+    data: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    if not isinstance(data, dict):
+        return {}, {}
+
+    explicit_summary = data.get("account_overview")
+    explicit_summary_provided = isinstance(explicit_summary, dict)
+    summary_updates = dict(explicit_summary) if explicit_summary_provided else {}
+
+    explicit_credentials = data.get("credential_updates")
+    credential_updates = (
+        {
+            key: value
+            for key, value in explicit_credentials.items()
+            if value not in (None, "")
+        }
+        if isinstance(explicit_credentials, dict)
+        else {}
+    )
+
+    legacy_credentials = {
+        key: value
+        for key, value in data.items()
+        if key in PERSISTED_ACTION_DATA_KEYS and value not in (None, "")
+    }
+    credential_updates = {
+        **legacy_credentials,
+        **credential_updates,
+    }
+
+    if not explicit_summary_provided and action_id in STATEFUL_ACTION_IDS:
+        overview = _build_account_overview(platform, data)
+        if overview:
+            summary_updates.update(overview)
+
+    if "url" in data and action_id in {"payment_link", "generate_trial_link"}:
+        summary_updates["cashier_url"] = data["url"]
+
+    return summary_updates, credential_updates
+
+
 class PlatformRuntime:
     def list_platforms(self) -> list[PlatformDescriptor]:
         load_all()
@@ -233,23 +284,12 @@ class PlatformRuntime:
 
             if result.get("ok") and isinstance(result.get("data"), dict):
                 data = result["data"]
-                needs_save = False
-                credential_updates = {
-                    key: value
-                    for key, value in data.items()
-                    if key in PERSISTED_ACTION_DATA_KEYS and value not in (None, "")
-                }
-                summary_updates: dict[str, Any] = {}
-                if command.action_id in STATEFUL_ACTION_IDS:
-                    overview = _build_account_overview(command.platform, data)
-                    if overview:
-                        summary_updates.update(overview)
-                        needs_save = True
-                if "url" in data and command.action_id in {"payment_link", "generate_trial_link"}:
-                    summary_updates["cashier_url"] = data["url"]
-                    needs_save = True
-                if credential_updates:
-                    needs_save = True
+                summary_updates, credential_updates = _collect_runtime_patch_payload(
+                    command.platform,
+                    command.action_id,
+                    data,
+                )
+                needs_save = bool(summary_updates or credential_updates)
                 if needs_save:
                     model.updated_at = datetime.now(timezone.utc)
                     patch_account_graph(

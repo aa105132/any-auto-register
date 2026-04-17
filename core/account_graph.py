@@ -39,6 +39,13 @@ PLATFORM_CREDENTIAL_TYPES: dict[str, str] = {
     "wos_session": "token",
     "sso": "cookie",
     "sso_rw": "cookie",
+    "privy_token": "token",
+    "account_id": "identifier",
+    "connection_token": "token",
+    "connection_string": "token",
+    "wallet_address": "identifier",
+    "clowdbot_instance_id": "identifier",
+    "claimed_agent_email": "identifier",
 }
 
 PRIMARY_TOKEN_WRITE_KEYS: dict[str, str] = {
@@ -47,6 +54,7 @@ PRIMARY_TOKEN_WRITE_KEYS: dict[str, str] = {
     "kiro": "accessToken",
     "trae": "legacy_token",
     "openblocklabs": "wos_session",
+    "atxp": "connection_string",
 }
 
 NON_LEGACY_EXTRA_KEYS = {
