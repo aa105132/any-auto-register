@@ -245,6 +245,31 @@ def test_fetch_atxp_bundle_accepts_plain_text_connection_token():
     assert bundle["connection_token"] == "ConnTokenPlain123456"
 
 
+@pytest.mark.parametrize(
+    "plain_text",
+    [
+        "connection_pending_123456",
+        "token_expired_retry_01",
+    ],
+)
+def test_fetch_atxp_bundle_rejects_status_like_plain_text_tokens(plain_text):
+    session = _DummySession()
+    session.queue_get(_DummyResponse(payload={"accountId": "acct-1"}))
+    session.queue_post(_DummyResponse(payload={"address": "0xwallet"}))
+    session.queue_get(
+        _DummyResponse(
+            text=plain_text,
+            json_error=ValueError("not json"),
+        )
+    )
+    client = AtxpClient(session=session)
+
+    with pytest.raises(
+        ValueError, match="ATXP /connection-token 返回格式无法提取 connection token"
+    ):
+        client.fetch_atxp_bundle(token="privy-token")
+
+
 def test_fetch_atxp_bundle_rejects_unrelated_long_string_fields_without_token():
     session = _DummySession()
     session.queue_get(_DummyResponse(payload={"accountId": "acct-1"}))

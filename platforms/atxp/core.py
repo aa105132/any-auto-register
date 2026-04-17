@@ -20,7 +20,7 @@ class AtxpClient:
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
     )
-    RAW_CONNECTION_TOKEN_RE = re.compile(r"^(?=.*(?:conn|token))[A-Za-z0-9_-]{16,}$", re.IGNORECASE)
+    RAW_CONNECTION_TOKEN_RE = re.compile(r"^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)[A-Za-z0-9]{16,64}$")
     CONNECTION_TOKEN_FIELDS = ("connectionToken", "connection_token")
     PRIVY_HEADERS_BASE = {
         "privy-client": "react-auth:3.10.2",
