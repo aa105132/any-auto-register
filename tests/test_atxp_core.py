@@ -245,6 +245,24 @@ def test_fetch_atxp_bundle_accepts_plain_text_connection_token():
     assert bundle["connection_token"] == "ConnTokenPlain123456"
 
 
+def test_fetch_atxp_bundle_rejects_unrelated_long_string_fields_without_token():
+    session = _DummySession()
+    session.queue_get(_DummyResponse(payload={"accountId": "acct-1"}))
+    session.queue_post(_DummyResponse(payload={"address": "0xwallet"}))
+    session.queue_get(
+        _DummyResponse(
+            payload={"message": "ThisIsJustALongString1234567890", "status": "pending"},
+            text='{"message":"ThisIsJustALongString1234567890","status":"pending"}',
+        )
+    )
+    client = AtxpClient(session=session)
+
+    with pytest.raises(
+        ValueError, match="ATXP /connection-token 返回格式无法提取 connection token"
+    ):
+        client.fetch_atxp_bundle(token="privy-token")
+
+
 def test_fetch_atxp_bundle_rejects_non_object_json_payloads():
     session = _DummySession()
     session.queue_get(_DummyResponse(payload=[]))
@@ -300,3 +318,16 @@ def test_probe_gateway_connection_uses_connection_string_and_top_level_data():
             },
         )
     ]
+
+
+def test_probe_gateway_connection_rejects_non_list_data_payload():
+    session = _DummySession()
+    session.queue_get(_DummyResponse(payload={"data": {"id": "gpt-4.1-mini"}}))
+    client = AtxpClient(session=session)
+
+    with pytest.raises(
+        TypeError, match="ATXP Gateway /v1/models.data 必须是 list，实际为 dict"
+    ):
+        client.probe_gateway_connection(
+            connection_string="https://accounts.atxp.ai?connection_token=conn-1"
+        )

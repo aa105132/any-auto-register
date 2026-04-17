@@ -20,7 +20,8 @@ class AtxpClient:
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
     )
-    RAW_CONNECTION_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{16,}$")
+    RAW_CONNECTION_TOKEN_RE = re.compile(r"^(?=.*(?:conn|token))[A-Za-z0-9_-]{16,}$", re.IGNORECASE)
+    CONNECTION_TOKEN_FIELDS = ("connectionToken", "connection_token")
     PRIVY_HEADERS_BASE = {
         "privy-client": "react-auth:3.10.2",
         "privy-app-id": "cma1jnfkk01mml20n6fyvsmll",
@@ -117,7 +118,7 @@ class AtxpClient:
         wallet_address = self._extract_wallet_address(me_payload, ensure_payload)
         connection_token = (
             self._extract_connection_token(connection_payload)
-            or self._extract_connection_token(connection_text)
+            or self._extract_connection_token_from_text(connection_text, allow_plain_text=True)
         )
         if not connection_token:
             preview_source = connection_text or json.dumps(connection_payload or {}, ensure_ascii=False)
@@ -144,7 +145,11 @@ class AtxpClient:
         )
         response.raise_for_status()
         payload = self._json_object(response, "ATXP Gateway /v1/models")
-        models = payload.get("data") or []
+        models = payload.get("data")
+        if not isinstance(models, list):
+            raise TypeError(
+                f"ATXP Gateway /v1/models.data 必须是 list，实际为 {type(models).__name__}"
+            )
         first_model = models[0] if models else {}
         model_id = first_model.get("id", "") if isinstance(first_model, dict) else str(first_model)
         return {
@@ -239,11 +244,13 @@ class AtxpClient:
     @classmethod
     def _extract_connection_token(cls, payload: Any) -> str:
         if isinstance(payload, dict):
-            for key in ("connectionToken", "connection_token"):
+            for key in cls.CONNECTION_TOKEN_FIELDS:
                 value = payload.get(key)
                 if isinstance(value, str) and value.strip():
                     return value.strip()
             for value in payload.values():
+                if not isinstance(value, (dict, list, str)):
+                    continue
                 token = cls._extract_connection_token(value)
                 if token:
                     return token
@@ -255,11 +262,11 @@ class AtxpClient:
                     return token
             return ""
         if isinstance(payload, str):
-            return cls._extract_connection_token_from_text(payload)
+            return cls._extract_connection_token_from_text(payload, allow_plain_text=False)
         return ""
 
     @classmethod
-    def _extract_connection_token_from_text(cls, text: str) -> str:
+    def _extract_connection_token_from_text(cls, text: str, *, allow_plain_text: bool) -> str:
         stripped = text.strip()
         if not stripped:
             return ""
@@ -271,14 +278,11 @@ class AtxpClient:
         parsed = urlparse(stripped)
         if parsed.scheme and parsed.netloc:
             query = parse_qs(parsed.query)
-            for key in ("connection_token", "connectionToken"):
+            for key in cls.CONNECTION_TOKEN_FIELDS:
                 values = query.get(key)
                 if values and values[0]:
                     return values[0]
-        match = re.search(r"(?:connection_token|connectionToken)=([^&\s]+)", stripped)
-        if match:
-            return match.group(1)
-        if cls.RAW_CONNECTION_TOKEN_RE.fullmatch(stripped):
+        if allow_plain_text and cls.RAW_CONNECTION_TOKEN_RE.fullmatch(stripped):
             return stripped
         return ""
 
