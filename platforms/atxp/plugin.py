@@ -30,7 +30,12 @@ class AtxpPlatform(BasePlatform):
         gateway_health = result.get("gateway_health") or {}
         account_overview = {
             "gateway_health": gateway_health,
+            "gateway_health_alive": bool(gateway_health.get("success")),
+            "gateway_health_model": gateway_health.get("model", ""),
+            "gateway_health_checked_at": gateway_health.get("checked_at", ""),
             "clowdbot_status": result.get("clowdbot_status", "pending"),
+            "create_clowdbot_completed": bool(result.get("create_clowdbot_completed")),
+            "claim_email_completed": bool(result.get("claim_email_completed")),
             "reward_progress": result.get("reward_progress"),
             "task_error": result.get("task_error", ""),
             "atxp_me": result.get("me") or {},

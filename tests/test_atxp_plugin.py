@@ -149,6 +149,8 @@ class AtxpPlatformTests(unittest.TestCase):
                 "checked_at": "2026-04-17T12:00:00Z",
             },
             "clowdbot_status": "failed",
+            "create_clowdbot_completed": True,
+            "claim_email_completed": False,
             "reward_progress": {"claimed": 0, "total": 2},
             "task_error": "claim_email failed",
             "me": {"accountId": "acct-1"},
@@ -168,7 +170,12 @@ class AtxpPlatformTests(unittest.TestCase):
         self.assertEqual(mapped.extra["wallet_address"], "0xabc")
         overview = mapped.extra["account_overview"]
         self.assertEqual(overview["gateway_health"], raw["gateway_health"])
+        self.assertTrue(overview["gateway_health_alive"])
+        self.assertEqual(overview["gateway_health_model"], "gpt-4.1-mini")
+        self.assertEqual(overview["gateway_health_checked_at"], "2026-04-17T12:00:00Z")
         self.assertEqual(overview["clowdbot_status"], "failed")
+        self.assertTrue(overview["create_clowdbot_completed"])
+        self.assertFalse(overview["claim_email_completed"])
         self.assertEqual(overview["reward_progress"], {"claimed": 0, "total": 2})
         self.assertEqual(overview["task_error"], "claim_email failed")
         self.assertEqual(overview["atxp_me"], {"accountId": "acct-1"})
