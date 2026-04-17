@@ -1,13 +1,28 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 from typing import Any, Callable
 
 import requests
 
 
+def _utcnow_iso() -> str:
+    return dt.datetime.now(dt.UTC).isoformat().replace("+00:00", "Z")
+
+
 class AtxpClient:
     """ATXP 协议最小客户端。"""
+
+    PRIVY_HEADERS_BASE = {
+        "privy-client": "react-auth:3.10.2",
+        "privy-app-id": "cma1jnfkk01mml20n6fyvsmll",
+        "privy-client-id": "client-WY6L6ApVtkaEUHas1qqZ4fFKtQuUF67ghGYyd82oa5PTw",
+        "privy-ui": "t",
+        "origin": "https://accounts.atxp.ai",
+        "referer": "https://accounts.atxp.ai/",
+        "content-type": "application/json",
+    }
 
     def __init__(
         self,
@@ -15,8 +30,8 @@ class AtxpClient:
         proxy: str | None = None,
         log_fn: Callable[[str], None] | None = None,
         session: requests.Session | None = None,
-        base_url: str = "https://api.atxp.ai",
-        gateway_url: str = "https://gateway.atxp.ai",
+        base_url: str = "https://accounts.atxp.ai",
+        gateway_url: str = "https://llm.atxp.ai",
     ) -> None:
         self.timeout = timeout
         self.proxy = proxy
@@ -27,101 +42,124 @@ class AtxpClient:
         if proxy:
             self.session.proxies.update({"http": proxy, "https": proxy})
 
-    def send_privy_code(self, email: str) -> dict[str, Any]:
+    def send_privy_code(self, email: str, ca_id: str) -> dict[str, Any]:
         self._log("send_privy_code")
         response = self.session.post(
-            f"{self.base_url}/privy/send-code",
+            "https://auth.privy.io/api/v1/passwordless/init",
+            headers=self._privy_headers(ca_id),
             json={"email": email},
             timeout=self.timeout,
         )
+        response.raise_for_status()
         return response.json()
 
-    def authenticate_privy(self, code: str, email: str | None = None) -> dict[str, Any]:
+    def authenticate_privy(self, email: str, code: str, ca_id: str) -> dict[str, Any]:
         self._log("authenticate_privy")
-        payload: dict[str, Any] = {"code": code}
-        if email:
-            payload["email"] = email
         response = self.session.post(
-            f"{self.base_url}/privy/authenticate",
-            json=payload,
+            "https://auth.privy.io/api/v1/passwordless/authenticate",
+            headers=self._privy_headers(ca_id),
+            json={"email": email, "code": code, "mode": "login-or-sign-up"},
             timeout=self.timeout,
         )
-        data = response.json()
-        token = self._pick(data, ["token", "access_token"])
-        refresh_token = self._pick(data, ["refresh_token"])
-        if not refresh_token:
-            refresh_token = self._cookie_get(response, "refresh_token")
-        if not refresh_token:
-            refresh_token = self._cookie_get(self.session, "refresh_token")
-        return {
-            "token": token,
-            "refresh_token": refresh_token,
-            "raw": data,
-        }
+        response.raise_for_status()
+        payload = response.json()
+        refresh_token = (
+            payload.get("refresh_token")
+            or self._cookie_get(response, "privy-refresh-token")
+            or self._cookie_get(response, "refresh_token")
+            or self._cookie_get(self.session, "privy-refresh-token")
+            or self._cookie_get(self.session, "refresh_token")
+            or ""
+        )
+        payload["refresh_token"] = refresh_token
+        return payload
 
     def fetch_atxp_bundle(self, token: str) -> dict[str, Any]:
         self._log("fetch_atxp_bundle")
-        response = self.session.get(
-            f"{self.base_url}/bundle",
-            headers={"Authorization": f"Bearer {token}"},
+        headers = self._bearer_headers(token)
+
+        me_response = self.session.get(
+            "https://accounts.atxp.ai/me",
+            headers=headers,
             timeout=self.timeout,
         )
-        data = response.json()
-        root = data.get("data", data)
-        me = root.get("me", {})
-        wallet_info = root.get("wallet_info", {})
-        account_id = wallet_info.get("account_id") or me.get("account_id")
-        wallet_address = wallet_info.get("wallet_address") or me.get("wallet_address")
-        connection_token = wallet_info.get("connection_token") or root.get("connection_token")
-        connection_text = wallet_info.get("connection_text") or root.get("connection_text")
+        me_response.raise_for_status()
+        me_payload = me_response.json()
+
+        ensure_response = self.session.post(
+            "https://accounts.atxp.ai/wallets/ensure",
+            headers=headers,
+            json={},
+            timeout=self.timeout,
+        )
+        ensure_response.raise_for_status()
+        ensure_payload = ensure_response.json()
+
+        connection_response = self.session.get(
+            "https://accounts.atxp.ai/connection-token",
+            headers=headers,
+            timeout=self.timeout,
+        )
+        connection_response.raise_for_status()
+        connection_text = getattr(connection_response, "text", "") or ""
+        try:
+            connection_payload = connection_response.json()
+        except ValueError:
+            connection_payload = json.loads(connection_text) if connection_text else {}
+        if not connection_text:
+            connection_text = json.dumps(connection_payload)
+
+        embedded_wallets = me_payload.get("embeddedWallets") or []
+        embedded_wallet = embedded_wallets[0] if embedded_wallets else {}
+        wallet_address = (
+            ((ensure_payload.get("wallet") or {}).get("address"))
+            or embedded_wallet.get("address")
+            or ""
+        )
+
         return {
-            "me": me,
-            "wallet_info": wallet_info,
-            "account_id": account_id,
+            "me": me_payload,
+            "wallet_info": ensure_payload,
+            "account_id": me_payload.get("accountId", ""),
             "wallet_address": wallet_address,
-            "connection_token": connection_token,
+            "connection_token": connection_payload.get("connectionToken", ""),
             "connection_text": connection_text,
-            "raw": data,
         }
 
-    def probe_gateway_connection(self, connection_token: str) -> dict[str, Any]:
+    def probe_gateway_connection(self, connection_string: str) -> dict[str, Any]:
         self._log("probe_gateway_connection")
         response = self.session.get(
-            f"{self.gateway_url}/models",
-            headers={"Authorization": f"Bearer {connection_token}"},
+            "https://llm.atxp.ai/v1/models",
+            headers={"authorization": f"Bearer {connection_string}"},
             timeout=self.timeout,
         )
-        data = response.json()
-        root = data.get("data", data)
-        models = root.get("models") or []
-        first_model = models[0] if models else None
-        if isinstance(first_model, dict):
-            model_id = first_model.get("id") or first_model.get("model")
-        else:
-            model_id = first_model
+        response.raise_for_status()
+        payload = response.json()
+        models = payload.get("data") or []
+        first_model = models[0] if models else {}
+        model_id = first_model.get("id", "") if isinstance(first_model, dict) else str(first_model)
         return {
-            "success": bool(data.get("success", model_id is not None)),
-            "checked_at": dt.datetime.now(dt.UTC).isoformat(),
+            "success": True,
+            "checked_at": _utcnow_iso(),
             "model": model_id,
             "model_count": len(models),
-            "raw": data,
         }
 
     def _log(self, message: str) -> None:
         if self.log_fn:
             self.log_fn(message)
 
+    def _privy_headers(self, ca_id: str) -> dict[str, str]:
+        return {**self.PRIVY_HEADERS_BASE, "privy-ca-id": ca_id}
+
     @staticmethod
-    def _pick(data: dict[str, Any], keys: list[str]) -> Any:
-        for key in keys:
-            if key in data and data[key] is not None:
-                return data[key]
-        nested = data.get("data")
-        if isinstance(nested, dict):
-            for key in keys:
-                if key in nested and nested[key] is not None:
-                    return nested[key]
-        return None
+    def _bearer_headers(token: str) -> dict[str, str]:
+        return {
+            "authorization": f"Bearer {token}",
+            "content-type": "application/json",
+            "origin": "https://accounts.atxp.ai",
+            "referer": "https://accounts.atxp.ai/",
+        }
 
     @staticmethod
     def _cookie_get(target: Any, key: str) -> Any:
