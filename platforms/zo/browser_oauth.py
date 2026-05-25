@@ -586,6 +586,14 @@ def register_with_browser_oauth(
         settings = client.get_settings()
         actual_email = _extract_logged_email(dashboard_page, settings.get("data") if isinstance(settings, dict) else {})
 
+        pool_card_id = str(card.get("_pool_id") or "").strip()
+        if pool_card_id and card_binding_result.get("ok"):
+            try:
+                from core.credit_card_pool import CreditCardPool
+                CreditCardPool(str(card.get("_pool_path") or "")).mark_used(pool_card_id, platform="zo", account_email=actual_email or email_hint)
+            except Exception as mark_exc:
+                log_fn(f"[Zo] 信用卡池使用记录回写失败: {mark_exc!r}")
+
     return {
         "email": finalize_oauth_email(actual_email, email_hint, "Zo"),
         "api_key": api_key,

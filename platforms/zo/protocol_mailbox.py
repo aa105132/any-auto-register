@@ -57,8 +57,15 @@ class ZoProtocolMailboxWorker:
         card = resolve_card_info(self.extra)
         card_binding_result = self.client.bind_card(card=card, require_confirmed=True)
 
-        # 6. 创建 Access Token，作为 API key 保存。
-        token_name = str(self.extra.get("zo_access_token_name") or "auto-register").strip() or "auto-register"
+        pool_card_id = str(card.get("_pool_id") or "").strip()
+        if pool_card_id and card_binding_result.get("ok"):
+            try:
+                from core.credit_card_pool import CreditCardPool
+                CreditCardPool(str(card.get("_pool_path") or "")).mark_used(pool_card_id, platform="zo", account_email=email)
+            except Exception as exc:
+                self.log(f"Zo 信用卡池使用记录回写失败: {exc!r}")
+
+        # 6. 创建 Access Token，作为 API key 保存。        token_name = str(self.extra.get("zo_access_token_name") or "auto-register").strip() or "auto-register"
         key_create_result = self.client.create_access_token(name=token_name)
         api_key = str(key_create_result.get("api_key") or "").strip()
         api_verification = self.client.verify_api_key(api_key)

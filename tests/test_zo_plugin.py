@@ -180,12 +180,17 @@ class ZoPlatformTests(unittest.TestCase):
         self.assertNotIn("5555555555554444", repr(masked))
 
     def test_missing_card_requires_runtime_configuration(self):
-        with patch.dict(os.environ, {key: "" for key in (
-            "ZO_CARD_NUMBER", "ZO_CARD_EXP_MONTH", "ZO_CARD_EXP_YEAR", "ZO_CARD_CVV",
-            "ZO_CARD_COUNTRY", "ZO_CARD_ADDRESS", "ZO_CARD_CITY", "ZO_CARD_POSTAL_CODE", "ZO_CARD_STATE",
-        )}, clear=False):
-            with self.assertRaisesRegex(RuntimeError, "ZO_CARD"):
-                resolve_card_info({})
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            empty_pool_path = Path(tmp).joinpath("credit_cards_pool.json")
+            with patch.dict(os.environ, {key: "" for key in (
+                "ZO_CARD_NUMBER", "ZO_CARD_EXP_MONTH", "ZO_CARD_EXP_YEAR", "ZO_CARD_CVV",
+                "ZO_CARD_COUNTRY", "ZO_CARD_ADDRESS", "ZO_CARD_CITY", "ZO_CARD_POSTAL_CODE", "ZO_CARD_STATE",
+            )}, clear=False):
+                with self.assertRaisesRegex(RuntimeError, "ZO_CARD"):
+                    resolve_card_info({"credit_card_pool_path": str(empty_pool_path)})
 
     def test_bind_card_uses_setup_intent_and_stripe_confirm_without_leaking_card(self):
         session = _BillingRecordingZoSession()

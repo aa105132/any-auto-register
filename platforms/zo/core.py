@@ -212,12 +212,30 @@ def normalize_card_info(extra: dict[str, Any] | None) -> dict[str, str]:
 
 
 
-
 def load_card_info_from_env() -> dict[str, str]:
     return {key: os.environ.get(env_name, "").strip() for key, env_name in ZO_CARD_ENV_MAP.items()}
 
+
+def load_card_info_from_pool(extra: dict[str, Any] | None = None) -> dict[str, str]:
+    """从本地信用卡池取默认有效卡，作为 Zo 绑卡兜底。"""
+    data = dict(extra or {})
+    pool_path = str(data.get("credit_card_pool_path") or data.get("card_pool_path") or "").strip()
+    try:
+        from core.credit_card_pool import CreditCardPool
+
+        card = CreditCardPool(pool_path).get_default()
+    except Exception:
+        return {}
+    if not card:
+        return {}
+    normalized = normalize_card_info({"zo_card": card})
+    normalized["_pool_id"] = str(card.get("_pool_id") or card.get("id") or "")
+    normalized["_pool_path"] = str(card.get("_pool_path") or pool_path or "")
+    return normalized
+
+
 def resolve_card_info(extra: dict[str, Any] | None) -> dict[str, str]:
-    """解析 Zo 绑卡信息；优先使用 extra.zo_card，其次使用 ZO_CARD_* 环境变量。"""
+    """解析 Zo 绑卡信息；优先 extra.zo_card，其次环境变量，最后使用信用卡池。"""
     data = dict(extra or {})
     has_explicit = isinstance(data.get("zo_card"), dict) or any(
         key in data for key in (
@@ -230,7 +248,10 @@ def resolve_card_info(extra: dict[str, Any] | None) -> dict[str, str]:
     env_card = load_card_info_from_env()
     if any(env_card.values()):
         return normalize_card_info({"zo_card": env_card})
-    raise RuntimeError("Zo 绑卡缺少字段；请通过 extra.zo_card 或 ZO_CARD_* 环境变量传入靶场测试卡")
+    pool_card = load_card_info_from_pool(data)
+    if any(pool_card.get(key) for key in ("number", "cvv", "address")):
+        return pool_card
+    raise RuntimeError("Zo 绑卡缺少字段；请通过 extra.zo_card、ZO_CARD_* 环境变量或 Web 信用卡池传入靶场测试卡")
 
 
 def mask_card_info(card: dict[str, Any] | None) -> dict[str, str]:

@@ -6,6 +6,7 @@ import { FloatingTaskButton } from '@/components/tasks/FloatingTaskButton'
 import {
   ChevronDown,
   ChevronRight,
+  CreditCard,
   Database,
   Globe,
   History,
@@ -22,6 +23,7 @@ import {
 const Dashboard = lazy(() => import('@/pages/Dashboard'))
 const Accounts = lazy(() => import('@/pages/Accounts'))
 const GoogleAccountPool = lazy(() => import('@/pages/GoogleAccountPool'))
+const CreditCardPool = lazy(() => import('@/pages/CreditCardPool'))
 const OutlookMailboxPool = lazy(() => import('@/pages/OutlookMailboxPool'))
 const Register = lazy(() => import('@/pages/Register'))
 const Proxies = lazy(() => import('@/pages/Proxies'))
@@ -129,6 +131,10 @@ function Sidebar({ theme, toggleTheme }: { theme: string; toggleTheme: () => voi
                 <Inbox className="h-4 w-4" />
                 <span>Outlook 邮箱池</span>
               </NavLink>
+              <NavLink to="/credit-card-pool" className={({ isActive }) => navClass(isActive)}>
+                <CreditCard className="h-4 w-4" />
+                <span>信用卡池</span>
+              </NavLink>
             </div>
           </section>
 
@@ -172,6 +178,7 @@ function Shell({ theme, toggleTheme }: { theme: string; toggleTheme: () => void 
               <Route path="/accounts/:platform" element={<Accounts />} />
               <Route path="/google-account-pool" element={<GoogleAccountPool />} />
               <Route path="/outlook-mailbox-pool" element={<OutlookMailboxPool />} />
+              <Route path="/credit-card-pool" element={<CreditCardPool />} />
               <Route path="/register" element={<Register />} />
               <Route path="/history" element={<TaskHistory />} />
               <Route path="/proxies" element={<Proxies />} />

@@ -36,6 +36,7 @@ from api.account_checks import router as account_checks_router
 from api.accounts import router as accounts_router
 from api.actions import router as actions_router
 from api.config import router as config_router
+from api.credit_card_pool import router as credit_card_pool_router
 from api.health import router as health_router
 from api.google_account_pool import router as google_account_pool_router
 from api.mailbox_inventory import router as mailbox_inventory_router
@@ -95,6 +96,7 @@ app.include_router(accounts_router, prefix="/api")
 app.include_router(account_checks_router, prefix="/api")
 app.include_router(actions_router, prefix="/api")
 app.include_router(config_router, prefix="/api")
+app.include_router(credit_card_pool_router, prefix="/api")
 app.include_router(health_router, prefix="/api")
 app.include_router(google_account_pool_router, prefix="/api")
 app.include_router(mailbox_inventory_router, prefix="/api")
