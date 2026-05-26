@@ -1,6 +1,7 @@
 import { BrowserRouter, NavLink, Route, Routes, useLocation } from 'react-router-dom'
 import { Suspense, lazy, useEffect, useState } from 'react'
 import { getPlatforms } from '@/lib/app-data'
+import { apiFetch } from '@/lib/utils'
 import { ActiveTaskProvider } from '@/context/ActiveTaskContext'
 import { FloatingTaskButton } from '@/components/tasks/FloatingTaskButton'
 import {
@@ -87,6 +88,74 @@ function AccountsSubNav() {
   )
 }
 
+
+type TwoAPIPluginNavItem = {
+  key: string
+  label: string
+}
+
+function formatTwoAPIPluginLabel(plugin: any) {
+  const name = String(plugin?.name || '').trim()
+  const display = String(plugin?.display_name || '').trim()
+  if (name.toLowerCase() === 'zo') return 'Zo'
+  return display || name || 'unknown'
+}
+
+function TwoAPISubNav() {
+  const location = useLocation()
+  const isTwoAPI = location.pathname.startsWith('/twoapi')
+  const [open, setOpen] = useState(isTwoAPI)
+  const [plugins, setPlugins] = useState<TwoAPIPluginNavItem[]>([{ key: 'zo', label: 'Zo' }])
+
+  useEffect(() => {
+    if (isTwoAPI) setOpen(true)
+  }, [isTwoAPI])
+
+  useEffect(() => {
+    apiFetch('/2api/plugins')
+      .then((data) => {
+        const rows = Array.isArray(data?.items) ? data.items : []
+        const mapped = rows
+          .map((plugin: any) => ({ key: String(plugin?.name || '').trim(), label: formatTwoAPIPluginLabel(plugin) }))
+          .filter((plugin: TwoAPIPluginNavItem) => plugin.key)
+        setPlugins(mapped.length > 0 ? mapped : [{ key: 'zo', label: 'Zo' }])
+      })
+      .catch(() => setPlugins([{ key: 'zo', label: 'Zo' }]))
+  }, [])
+
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className={`sidebar-nav-item w-full justify-between ${isTwoAPI ? 'active' : ''}`}
+      >
+        <span className="flex items-center gap-2.5">
+          <PlugZap className="h-4 w-4" />
+          <span>2API</span>
+        </span>
+        {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+      </button>
+      {open && (
+        <div className="ml-2 mt-1 space-y-0.5">
+          {plugins.map((plugin) => (
+            <NavLink
+              key={plugin.key}
+              to={`/twoapi/${plugin.key}`}
+              className={({ isActive }) =>
+                `sidebar-nav-item text-[13px] ${isActive ? 'active' : ''}`
+              }
+            >
+              <span className="h-1.5 w-1.5 flex-shrink-0 rounded-full bg-[var(--color-accent)]/70" />
+              <span>{plugin.label}</span>
+            </NavLink>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function Sidebar({ theme, toggleTheme }: { theme: string; toggleTheme: () => void }) {
   const isLight = theme === 'light'
 
@@ -149,10 +218,7 @@ function Sidebar({ theme, toggleTheme }: { theme: string; toggleTheme: () => voi
                 <Globe className="h-4 w-4" />
                 <span>代理资源</span>
               </NavLink>
-              <NavLink to="/twoapi" className={({ isActive }) => navClass(isActive)}>
-                <PlugZap className="h-4 w-4" />
-                <span>2API</span>
-              </NavLink>
+              <TwoAPISubNav />
               <NavLink to="/settings" className={({ isActive }) => navClass(isActive)}>
                 <SettingsIcon className="h-4 w-4" />
                 <span>配置中心</span>
@@ -183,6 +249,7 @@ function Shell({ theme, toggleTheme }: { theme: string; toggleTheme: () => void 
               <Route path="/history" element={<TaskHistory />} />
               <Route path="/proxies" element={<Proxies />} />
               <Route path="/twoapi" element={<TwoAPI />} />
+              <Route path="/twoapi/:plugin" element={<TwoAPI />} />
               <Route path="/settings" element={<Settings />} />
             </Routes>
           </Suspense>

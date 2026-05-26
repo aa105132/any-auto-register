@@ -13,6 +13,8 @@ class TwoAPISettings:
     request_timeout: float = 90.0
     wake_timeout: float = 60.0
     max_retries: int = 2
+    keepalive_space_fallback: bool = False
+    minimize_ask_context: bool = True
 
 
 @dataclass
@@ -30,7 +32,21 @@ class TwoAPIAccount:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def public_metadata(self) -> dict[str, Any]:
-        hidden = {"cookies", "cookie", "access_token", "refresh_token", "api_key", "authorization"}
+        hidden = {
+            "cookies",
+            "cookie",
+            "cookie_header",
+            "access_token",
+            "refresh_token",
+            "api_key",
+            "authorization",
+            "firebase_api_key",
+            "firebase_refresh_token",
+            "firebase_id_token",
+            "auth_headers",
+            "captcha_token",
+            "turnstile_token",
+        }
         return {
             key: value
             for key, value in dict(self.metadata or {}).items()
@@ -66,4 +82,8 @@ def mask_secret_in_text(value: str) -> str:
     import re
 
     text = str(value or "")
-    return re.sub(r"zo_sk_[A-Za-z0-9_\-.]+", lambda m: mask_secret(m.group(0)), text)
+    text = re.sub(r"zo_sk_[A-Za-z0-9_\-.]+", lambda m: mask_secret(m.group(0)), text)
+    text = re.sub(r"cwk-[A-Za-z0-9_\-.]+", lambda m: mask_secret(m.group(0)), text)
+    text = re.sub(r"sk-[A-Za-z0-9_\-.]{12,}", lambda m: mask_secret(m.group(0)), text)
+    text = re.sub(r"AIza[0-9A-Za-z_\-]{20,}", lambda m: mask_secret(m.group(0)), text)
+    return text

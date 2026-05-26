@@ -8,6 +8,7 @@ from typing import Any
 
 from services.twoapi.key_store import TwoAPIKeyStore
 from services.twoapi.models import TwoAPISettings, mask_secret
+from services.twoapi.plugins.swarms import SwarmsTwoAPIPlugin
 from services.twoapi.plugins.zo import ZoTwoAPIPlugin
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -21,7 +22,10 @@ class TwoAPIManager:
         self.settings_path = self.data_dir / "twoapi_settings.json"
         self.key_store = TwoAPIKeyStore(self.data_dir / "twoapi_keys.json")
         self.settings = self._load_settings()
-        self.plugins = {"zo": ZoTwoAPIPlugin(settings=self.settings, data_dir=self.data_dir)}
+        self.plugins = {
+            "zo": ZoTwoAPIPlugin(settings=self.settings, data_dir=self.data_dir),
+            "swarms": SwarmsTwoAPIPlugin(settings=self.settings, data_dir=self.data_dir),
+        }
         self._keepalive_thread: threading.Thread | None = None
         self._keepalive_stop = threading.Event()
         self._keepalive_running = False
@@ -59,6 +63,7 @@ class TwoAPIManager:
         return {
             "ok": True,
             "listen": "http://127.0.0.1:6543/zo/v1",
+            "listen_urls": ["http://127.0.0.1:6543/zo/v1", "http://127.0.0.1:6543/swarms/v1"],
             "settings": self.settings.__dict__,
             "plugins": plugins,
             "key_count": len(self.key_store.list()),
@@ -71,6 +76,54 @@ class TwoAPIManager:
             item["key_preview"] = mask_secret(str(item.get("key") or ""))
             rows.append(item)
         return rows
+
+    def import_plugin_accounts(
+        self,
+        plugin: str,
+        *,
+        records: list[dict[str, Any]] | None = None,
+        lines: list[str] | None = None,
+        source: str = "external",
+    ) -> dict[str, Any]:
+        item = self.get_plugin(plugin)
+        if not hasattr(item, "import_accounts"):
+            raise NotImplementedError(f"插件不支持外部账号导入: {plugin}")
+        return item.import_accounts(records=records, lines=lines, source=source)
+
+    def push_plugin_accounts(
+        self,
+        plugin: str,
+        *,
+        target_url: str,
+        source: str = "external-push",
+        emails: list[str] | None = None,
+        latest_only: bool = False,
+        timeout: float = 30.0,
+    ) -> dict[str, Any]:
+        item = self.get_plugin(plugin)
+        if not hasattr(item, "push_accounts"):
+            raise NotImplementedError(f"插件不支持外部账号推送: {plugin}")
+        return item.push_accounts(
+            target_url,
+            source=source,
+            emails=emails or [],
+            latest_only=latest_only,
+            timeout=timeout,
+        )
+
+    def refill_plugin_accounts(
+        self,
+        plugin: str,
+        *,
+        count: int = 1,
+        concurrency: int = 1,
+        executor_type: str = "protocol",
+        extra: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        item = self.get_plugin(plugin)
+        if not hasattr(item, "refill_accounts"):
+            raise NotImplementedError(f"插件不支持自动补号: {plugin}")
+        return item.refill_accounts(count=count, concurrency=concurrency, executor_type=executor_type, extra=extra or {})
 
     def create_key(self, *, plugin: str = "zo", note: str = "") -> dict[str, Any]:
         row = self.key_store.create(plugin=plugin, note=note)

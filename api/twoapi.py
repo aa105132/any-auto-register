@@ -1,20 +1,44 @@
 from __future__ import annotations
 
 from typing import Any
+import time
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from services.twoapi.manager import get_twoapi_manager
+from services.twoapi.server_runtime import twoapi_server_runtime
 
 management_router = APIRouter(prefix="/2api", tags=["2api"])
 proxy_router = APIRouter(prefix="/zo/v1", tags=["2api-proxy"])
+swarms_proxy_router = APIRouter(prefix="/swarms/v1", tags=["2api-proxy"])
 
 
 class TwoAPIKeyCreateRequest(BaseModel):
     plugin: str = "zo"
     note: str = ""
+
+
+class TwoAPIImportRequest(BaseModel):
+    lines: list[str] = Field(default_factory=list)
+    records: list[dict[str, Any]] = Field(default_factory=list)
+    source: str = "external"
+
+
+class TwoAPIPushRequest(BaseModel):
+    target_url: str
+    source: str = "external-push"
+    emails: list[str] = Field(default_factory=list)
+    latest_only: bool = False
+    timeout: float = 30.0
+
+
+class TwoAPIRefillRequest(BaseModel):
+    count: int = 1
+    concurrency: int = 1
+    executor_type: str = "protocol"
+    extra: dict[str, Any] = Field(default_factory=dict)
 
 
 class TwoAPISettingsRequest(BaseModel):
@@ -25,11 +49,30 @@ class TwoAPISettingsRequest(BaseModel):
     request_timeout: float | None = None
     wake_timeout: float | None = None
     max_retries: int | None = None
+    keepalive_space_fallback: bool | None = None
+    minimize_ask_context: bool | None = None
 
 
 @management_router.get("/status")
 def get_status():
-    return get_twoapi_manager().status()
+    result = get_twoapi_manager().status()
+    result["server"] = twoapi_server_runtime.status()
+    return result
+
+
+@management_router.get("/server")
+def get_server_status():
+    return twoapi_server_runtime.status()
+
+
+@management_router.post("/server/start")
+def start_server():
+    return twoapi_server_runtime.ensure_running()
+
+
+@management_router.post("/server/stop")
+def stop_server():
+    return twoapi_server_runtime.stop_owned()
 
 
 @management_router.get("/plugins")
@@ -46,6 +89,62 @@ def list_logs(plugin: str = "zo", limit: int = 200):
         raise HTTPException(404, "插件不存在") from exc
     return {"plugin": plugin, "items": item.recent_logs(limit=limit)}
 
+
+
+
+@management_router.post("/plugins/{plugin}/import")
+def import_plugin_accounts(plugin: str, body: TwoAPIImportRequest):
+    manager = get_twoapi_manager()
+    try:
+        item = manager.get_plugin(plugin)
+    except KeyError as exc:
+        raise HTTPException(404, "插件不存在") from exc
+    if not hasattr(item, "import_accounts"):
+        raise HTTPException(400, "插件不支持外部账号导入")
+    try:
+        return manager.import_plugin_accounts(plugin, records=body.records, lines=body.lines, source=body.source or "external")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@management_router.post("/plugins/{plugin}/push")
+def push_plugin_accounts(plugin: str, body: TwoAPIPushRequest):
+    manager = get_twoapi_manager()
+    try:
+        item = manager.get_plugin(plugin)
+    except KeyError as exc:
+        raise HTTPException(404, "插件不存在") from exc
+    if not hasattr(item, "push_accounts"):
+        raise HTTPException(400, "插件不支持外部账号推送")
+    try:
+        return manager.push_plugin_accounts(
+            plugin,
+            target_url=body.target_url,
+            source=body.source or "external-push",
+            emails=body.emails,
+            latest_only=body.latest_only,
+            timeout=body.timeout,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@management_router.post("/plugins/{plugin}/refill")
+def refill_plugin_accounts(plugin: str, body: TwoAPIRefillRequest):
+    manager = get_twoapi_manager()
+    try:
+        item = manager.get_plugin(plugin)
+    except KeyError as exc:
+        raise HTTPException(404, "插件不存在") from exc
+    if not hasattr(item, "refill_accounts"):
+        raise HTTPException(400, "插件不支持自动补号")
+    return manager.refill_plugin_accounts(
+        plugin,
+        count=body.count,
+        concurrency=body.concurrency,
+        executor_type=body.executor_type,
+        extra=body.extra,
+    )
 
 @management_router.post("/plugins/{plugin}/refresh-credits")
 def refresh_plugin_credits(plugin: str):
@@ -127,33 +226,71 @@ def _upstream_media_type(upstream: Any) -> str:
         return "application/json"
 
 
-def _iter_upstream_bytes(upstream: Any):
-    try:
-        iterator = getattr(upstream, "iter_content", None)
-        if callable(iterator):
-            for chunk in iterator(chunk_size=None):
-                if not chunk:
-                    continue
-                yield chunk if isinstance(chunk, bytes) else str(chunk).encode("utf-8")
-            return
-        line_iterator = getattr(upstream, "iter_lines", None)
-        if callable(line_iterator):
-            for line in line_iterator(decode_unicode=False):
-                yield line if isinstance(line, bytes) else str(line).encode("utf-8")
-                yield b"\n"
-            return
-        content = getattr(upstream, "content", None)
-        if content is not None:
-            yield content if isinstance(content, bytes) else str(content).encode("utf-8")
-            return
-        text = str(getattr(upstream, "text", "") or "")
-        if text:
-            yield text.encode("utf-8")
-    finally:
+def _iter_upstream_bytes(upstream: Any, *, heartbeat_interval: float = 15.0):
+    iterator = getattr(upstream, "iter_content", None)
+    line_iterator = getattr(upstream, "iter_lines", None)
+    has_stream_iterator = callable(iterator) or callable(line_iterator)
+
+    def _close_upstream() -> None:
         close = getattr(upstream, "close", None)
         if callable(close):
             close()
 
+    if not has_stream_iterator:
+        try:
+            content = getattr(upstream, "content", None)
+            if content is not None:
+                yield content if isinstance(content, bytes) else str(content).encode("utf-8")
+                return
+            text = str(getattr(upstream, "text", "") or "")
+            if text:
+                yield text.encode("utf-8")
+        finally:
+            _close_upstream()
+        return
+
+    import queue
+    import threading
+
+    heartbeat = max(0.01, float(heartbeat_interval or 15.0))
+    chunks: "queue.Queue[bytes | BaseException | object]" = queue.Queue(maxsize=16)
+    sentinel = object()
+
+    def _producer() -> None:
+        try:
+            if callable(iterator):
+                for chunk in iterator(chunk_size=None):
+                    if not chunk:
+                        continue
+                    raw = chunk if isinstance(chunk, bytes) else str(chunk).encode("utf-8")
+                    chunks.put(raw)
+                return
+            if callable(line_iterator):
+                for line in line_iterator(decode_unicode=False):
+                    raw = line if isinstance(line, bytes) else str(line or "").encode("utf-8")
+                    chunks.put(raw + b"\n")
+                return
+        except BaseException as exc:
+            chunks.put(exc)
+        finally:
+            chunks.put(sentinel)
+
+    worker = threading.Thread(target=_producer, name="twoapi-upstream-stream", daemon=True)
+    worker.start()
+    try:
+        while True:
+            try:
+                item = chunks.get(timeout=heartbeat)
+            except queue.Empty:
+                yield b": ping\n\n"
+                continue
+            if item is sentinel:
+                break
+            if isinstance(item, BaseException):
+                raise item
+            yield item
+    finally:
+        _close_upstream()
 
 def _stream_headers(upstream: Any) -> dict[str, str]:
     source = getattr(upstream, "headers", {}) or {}
@@ -186,6 +323,9 @@ def _response_from_upstream(upstream: Any, *, stream: bool = False) -> Response:
     if content is None:
         content = str(getattr(upstream, "text", "") or "").encode("utf-8")
     return Response(content=content, status_code=status_code, media_type=media_type)
+
+
+
 
 
 def _handle_http_exception(exc: HTTPException) -> JSONResponse:
@@ -238,6 +378,58 @@ async def zo_chat_with_token(path_token: str, request: Request, authorization: s
         payload = await request.json()
         want_stream = bool(payload.get("stream")) if isinstance(payload, dict) else False
         upstream = get_twoapi_manager().get_plugin("zo").forward_chat(payload, stream=want_stream)
+        return _response_from_upstream(upstream, stream=want_stream)
+    except HTTPException as exc:
+        return _handle_http_exception(exc)
+    except Exception as exc:
+        return _openai_error(str(exc), status_code=503, code="no_available_account")
+
+
+@swarms_proxy_router.get("/models")
+def swarms_models(authorization: str = Header(default="")):
+    try:
+        _require_key(authorization=authorization, plugin="swarms")
+        upstream = get_twoapi_manager().get_plugin("swarms").forward_models()
+        return _response_from_upstream(upstream)
+    except HTTPException as exc:
+        return _handle_http_exception(exc)
+    except Exception as exc:
+        return _openai_error(str(exc), status_code=503, code="no_available_account")
+
+
+@swarms_proxy_router.get("/{path_token}/models")
+def swarms_models_with_token(path_token: str, authorization: str = Header(default="")):
+    try:
+        _require_key(path_token=path_token, authorization=authorization, plugin="swarms")
+        upstream = get_twoapi_manager().get_plugin("swarms").forward_models()
+        return _response_from_upstream(upstream)
+    except HTTPException as exc:
+        return _handle_http_exception(exc)
+    except Exception as exc:
+        return _openai_error(str(exc), status_code=503, code="no_available_account")
+
+
+@swarms_proxy_router.post("/chat/completions")
+async def swarms_chat(request: Request, authorization: str = Header(default="")):
+    try:
+        _require_key(authorization=authorization, plugin="swarms")
+        payload = await request.json()
+        want_stream = bool(payload.get("stream")) if isinstance(payload, dict) else False
+        upstream = get_twoapi_manager().get_plugin("swarms").forward_chat(payload, stream=want_stream)
+        return _response_from_upstream(upstream, stream=want_stream)
+    except HTTPException as exc:
+        return _handle_http_exception(exc)
+    except Exception as exc:
+        return _openai_error(str(exc), status_code=503, code="no_available_account")
+
+
+@swarms_proxy_router.post("/{path_token}/chat/completions")
+async def swarms_chat_with_token(path_token: str, request: Request, authorization: str = Header(default="")):
+    try:
+        _require_key(path_token=path_token, authorization=authorization, plugin="swarms")
+        payload = await request.json()
+        want_stream = bool(payload.get("stream")) if isinstance(payload, dict) else False
+        upstream = get_twoapi_manager().get_plugin("swarms").forward_chat(payload, stream=want_stream)
         return _response_from_upstream(upstream, stream=want_stream)
     except HTTPException as exc:
         return _handle_http_exception(exc)

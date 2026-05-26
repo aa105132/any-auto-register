@@ -479,6 +479,56 @@ def _auto_upload_cpa(task_logger: TaskLogger, account) -> None:
         task_logger.log(f"  [CPA] 自动上传异常: {exc}", level="warning")
 
 
+
+
+def _auto_export_swarms_key(task_logger: TaskLogger, account) -> None:
+    if getattr(account, "platform", "") != "swarms":
+        return
+    extra = account.extra or {}
+    api_key = str(extra.get("api_key", "") or extra.get("ai_api_token", "") or account.token or "").strip()
+    if not api_key:
+        task_logger.log("  [Swarms] 没有可导出的 API key", level="warning")
+        return
+    try:
+        from pathlib import Path
+
+        output_dir = Path("output")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        keys_path = output_dir / "swarms_keys.txt"
+        credentials_path = output_dir / "swarms_credentials.json"
+
+        with keys_path.open("a", encoding="utf-8") as handle:
+            handle.write(f"{getattr(account, 'email', '')}|{api_key}\n")
+
+        try:
+            existing = json.loads(credentials_path.read_text(encoding="utf-8")) if credentials_path.exists() else []
+        except Exception:
+            existing = []
+        rows = [item for item in existing if isinstance(item, dict)] if isinstance(existing, list) else []
+        rows.append({
+            "email": getattr(account, "email", "") or "swarms-auto@local",
+            "password": getattr(account, "password", "") or "",
+            "user_id": getattr(account, "user_id", "") or str(extra.get("user_id", "") or ""),
+            "api_key": api_key,
+            "ai_api_token": api_key,
+            "source": "registration_auto_export",
+            "openai_base_url": "https://api.swarms.world/v1",
+            "credit_amount": 100.0,
+            "ok": True,
+        })
+        deduped = []
+        seen = set()
+        for row in rows:
+            key = str(row.get("api_key") or row.get("ai_api_token") or row.get("token") or "").strip()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            deduped.append(row)
+        credentials_path.write_text(json.dumps(deduped, ensure_ascii=False, indent=2), encoding="utf-8")
+        task_logger.log(f"  [Swarms] API key saved to {credentials_path}")
+    except Exception as exc:
+        task_logger.log(f"  [Swarms] API key write failed: {exc}", level="warning")
+
 def _build_platform_instance(platform_name: str, payload: dict[str, Any], logger: TaskLogger, resolved_proxy: str | None = None):
     from core.base_identity import normalize_identity_provider
     from core.base_mailbox import create_mailbox
@@ -606,6 +656,7 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
             logger.log(f"✓ 注册成功: {account.email}")
             _save_task_log(platform_name, account.email, "success")
             _auto_upload_cpa(logger, account)
+            _auto_export_swarms_key(logger, account)
             cashier_url = (account.extra or {}).get("cashier_url", "")
             if cashier_url:
                 logger.log(f"  [升级链接] {cashier_url}")
