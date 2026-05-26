@@ -4,12 +4,12 @@ import csv
 import io
 from datetime import datetime, timezone
 
+from sqlalchemy import func, or_
 from sqlmodel import Session, select
 
 from core.datetime_utils import serialize_datetime
-from core.db import AccountModel, engine
+from core.db import AccountModel, AccountOverviewModel, engine
 from core.account_graph import (
-    compute_account_stats,
     load_account_graphs,
     matches_status_filter,
     patch_account_graph,
@@ -93,26 +93,52 @@ class AccountsRepository:
     def list(self, query: AccountQuery) -> tuple[int, list[AccountRecord]]:
         page = max(query.page, 1)
         page_size = max(query.page_size, 1)
+        status = str(query.status or "").strip()
+
         with Session(engine) as session:
             statement = select(AccountModel)
+            count_statement = select(func.count(AccountModel.id)).select_from(AccountModel)
+
+            if status:
+                statement = statement.join(
+                    AccountOverviewModel,
+                    AccountOverviewModel.account_id == AccountModel.id,
+                    isouter=True,
+                )
+                count_statement = count_statement.join(
+                    AccountOverviewModel,
+                    AccountOverviewModel.account_id == AccountModel.id,
+                    isouter=True,
+                )
+
             if query.platform:
                 statement = statement.where(AccountModel.platform == query.platform)
+                count_statement = count_statement.where(AccountModel.platform == query.platform)
             if query.email:
                 statement = statement.where(AccountModel.email.contains(query.email))
-            statement = statement.order_by(AccountModel.created_at.desc(), AccountModel.id.desc())
-            models = session.exec(statement).all()
+                count_statement = count_statement.where(AccountModel.email.contains(query.email))
+            if status:
+                status_filter = or_(
+                    func.coalesce(AccountOverviewModel.display_status, "registered") == status,
+                    func.coalesce(AccountOverviewModel.lifecycle_status, "registered") == status,
+                    func.coalesce(AccountOverviewModel.plan_state, "unknown") == status,
+                    func.coalesce(AccountOverviewModel.validity_status, "unknown") == status,
+                )
+                statement = statement.where(status_filter)
+                count_statement = count_statement.where(status_filter)
+
+            total = int(session.exec(count_statement).one() or 0)
+            if total <= 0:
+                return 0, []
+
+            models = session.exec(
+                statement
+                .order_by(AccountModel.created_at.desc(), AccountModel.id.desc())
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+            ).all()
             records = self._load_records(session, models)
-            if query.status:
-                records = [item for item in records if matches_status_filter({
-                    "display_status": item.display_status,
-                    "lifecycle_status": item.lifecycle_status,
-                    "plan_state": item.plan_state,
-                    "validity_status": item.validity_status,
-                }, query.status)]
-        total = len(records)
-        start = (page - 1) * page_size
-        end = start + page_size
-        return total, records[start:end]
+        return total, records
 
     def get(self, account_id: int) -> AccountRecord | None:
         with Session(engine) as session:
@@ -270,6 +296,13 @@ class AccountsRepository:
                         "credentials",
                         "provider_accounts",
                         "provider_resources",
+                        "api_verification",
+                        "register_result",
+                        "login_result",
+                        "signin_result",
+                        "me",
+                        "user",
+                        "session",
                     }
                     and value not in (None, "", [], {})
                 }
@@ -313,30 +346,64 @@ class AccountsRepository:
             session.commit()
         return created
 
+    @staticmethod
+    def _count_rows(rows: list[tuple[object, object]], *, default: str = "") -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for value, total in rows:
+            key = str(value or default)
+            counts[key] = int(total or 0)
+        return counts
+
     def stats(self) -> AccountStats:
+        # 统计页只需要轻量状态列；不要通过 _load_records() 载入完整账号图谱，
+        # 否则会反序列化 account_overviews.summary_json，历史库里单条 JSON 可达数 MB，
+        # 启动后前端轮询 /api/accounts/stats 时会直接造成内存暴涨。
         with Session(engine) as session:
-            accounts = session.exec(select(AccountModel).order_by(AccountModel.created_at.desc(), AccountModel.id.desc())).all()
-            records = self._load_records(session, accounts)
-        stats = compute_account_stats(
-            [
-                {
-                    "lifecycle_status": item.lifecycle_status,
-                    "plan_state": item.plan_state,
-                    "validity_status": item.validity_status,
-                    "display_status": item.display_status,
-                }
-                for item in records
-            ],
-            [item.platform for item in records],
-        )
+            total = int(session.exec(select(func.count(AccountModel.id))).one() or 0)
+
+            platform_expr = func.coalesce(AccountModel.platform, "")
+            by_platform = self._count_rows(
+                session.exec(
+                    select(platform_expr, func.count(AccountModel.id)).group_by(platform_expr)
+                ).all()
+            )
+
+            def count_overview_column(column, default: str) -> dict[str, int]:
+                value_expr = func.coalesce(column, default)
+                rows = session.exec(
+                    select(value_expr, func.count(AccountModel.id))
+                    .select_from(AccountModel)
+                    .join(
+                        AccountOverviewModel,
+                        AccountOverviewModel.account_id == AccountModel.id,
+                        isouter=True,
+                    )
+                    .group_by(value_expr)
+                ).all()
+                return self._count_rows(rows, default=default)
+
+            by_lifecycle_status = count_overview_column(
+                AccountOverviewModel.lifecycle_status,
+                "registered",
+            )
+            by_plan_state = count_overview_column(AccountOverviewModel.plan_state, "unknown")
+            by_validity_status = count_overview_column(
+                AccountOverviewModel.validity_status,
+                "unknown",
+            )
+            by_display_status = count_overview_column(
+                AccountOverviewModel.display_status,
+                "registered",
+            )
+
         return AccountStats(
-            total=len(records),
-            by_platform=stats["by_platform"],
-            by_status=stats["by_display_status"],
-            by_lifecycle_status=stats["by_lifecycle_status"],
-            by_plan_state=stats["by_plan_state"],
-            by_validity_status=stats["by_validity_status"],
-            by_display_status=stats["by_display_status"],
+            total=total,
+            by_platform=by_platform,
+            by_status=by_display_status,
+            by_lifecycle_status=by_lifecycle_status,
+            by_plan_state=by_plan_state,
+            by_validity_status=by_validity_status,
+            by_display_status=by_display_status,
         )
 
     def export_csv(self, query: AccountQuery) -> str:

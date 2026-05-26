@@ -73,12 +73,8 @@ async def lifespan(app: FastAPI):
     from services.solver_manager import start_async
     start_async()
     from services.twoapi.manager import get_twoapi_manager
-    from services.twoapi.server_runtime import twoapi_server_runtime
-    server_state = twoapi_server_runtime.ensure_running(timeout_seconds=10)
-    if server_state.get("running"):
-        print(f"[OK] 2API 服务已就绪: {server_state.get('listen')}")
-    else:
-        print(f"[WARN] 2API 服务未就绪: {server_state.get('error') or 'unknown'}")
+    # 只启动轻量保活线程，不在主后端启动时再 fork 独立 2API 进程。
+    # 独立 2API 可通过前端按钮或 /api/2api/server/start 按需启动。
     get_twoapi_manager().start_keepalive(interval_seconds=300)
     yield
     from core.scheduler import scheduler as _scheduler
@@ -89,8 +85,6 @@ async def lifespan(app: FastAPI):
     stop()
     from services.twoapi.manager import get_twoapi_manager as _get_twoapi_manager
     _get_twoapi_manager().stop_keepalive()
-    from services.twoapi.server_runtime import twoapi_server_runtime as _twoapi_server_runtime
-    _twoapi_server_runtime.stop_owned()
     from core.subscription_proxy import subscription_proxy_manager
     subscription_proxy_manager.stop()
 

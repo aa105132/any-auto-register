@@ -97,12 +97,150 @@ MAILBOX_DRIVER_TEMPLATES = [
         "default_auth_mode": "admin_token",
         "auth_modes": [
             {"value": "admin_token", "label": "管理员 Token"},
+            {"value": "public_jwt", "label": "Public JWT"},
         ],
         "fields": [
             {"key": "cfworker_api_url", "label": "API URL", "placeholder": "https://apimail.example.com", "category": "connection"},
             {"key": "cfworker_admin_token", "label": "管理员 Token", "secret": True, "category": "auth"},
             {"key": "cfworker_domain", "label": "邮箱域名", "placeholder": "example.com", "category": "connection"},
             {"key": "cfworker_fingerprint", "label": "Fingerprint", "placeholder": "6703363b...", "category": "auth"},
+        ],
+    },
+    {
+        "provider_type": "mailbox",
+        "driver_type": "luckmail_token_query",
+        "label": "LuckMail Token Query",
+        "description": "LuckMail 已购邮箱查询模式。通过邮箱 + purchase token 直接轮询收件箱，不需要邮箱密码。",
+        "default_auth_mode": "purchase_token",
+        "auth_modes": [
+            {"value": "purchase_token", "label": "Purchase Token"},
+        ],
+        "fields": [
+            {"key": "luckmail_api_base_url", "label": "API URL", "placeholder": "https://mails.luckyous.com", "category": "connection"},
+            {"key": "luckmail_email", "label": "邮箱地址", "placeholder": "example@hotmail.com", "category": "identity"},
+            {"key": "luckmail_purchase_token", "label": "Purchase Token", "placeholder": "tok_xxx", "secret": True, "category": "auth"},
+        ],
+    },
+    {
+        "provider_type": "mailbox",
+        "driver_type": "outlook_token_imap",
+        "label": "Outlook Token IMAP",
+        "description": "导入 Outlook 邮箱 + refresh token，通过 Microsoft OAuth 刷新令牌后走 IMAP 收件。支持跨站重复使用同一个邮箱。",
+        "default_auth_mode": "refresh_token",
+        "auth_modes": [
+            {"value": "refresh_token", "label": "Refresh Token"},
+        ],
+        "fields": [
+            {"key": "outlook_email", "label": "Outlook 邮箱", "placeholder": "demo@outlook.com", "category": "identity"},
+            {"key": "outlook_password", "label": "邮箱密码（可选）", "secret": True, "category": "auth"},
+            {"key": "outlook_client_id", "label": "Client ID", "placeholder": "000000004C12AE6F", "category": "auth"},
+            {"key": "outlook_refresh_token", "label": "Refresh Token", "placeholder": "0.A...", "secret": True, "category": "auth"},
+            {"key": "outlook_alias_max_count", "label": "父邮箱别名上限", "placeholder": "0 表示不限", "category": "config", "type": "number"},
+        ],
+    },
+    {
+        "provider_type": "mailbox",
+        "driver_type": "yyds_mail_api",
+        "label": "YYDS Mail API",
+        "description": "215.im / YYDS Mail 动态邮箱，使用 API Key 创建邮箱并轮询收件箱。",
+        "default_auth_mode": "api_key",
+        "auth_modes": [
+            {"value": "api_key", "label": "API Key"},
+        ],
+        "fields": [
+            {"key": "yyds_mail_api_base_url", "label": "API URL", "placeholder": "https://maliapi.215.im", "category": "connection"},
+            {"key": "yyds_mail_api_key", "label": "API Key", "secret": True, "category": "auth"},
+            {"key": "yyds_mail_prefix", "label": "邮箱前缀", "placeholder": "可留空自动生成", "category": "identity"},
+            {"key": "yyds_mail_domain", "label": "邮箱域名", "placeholder": "可留空使用服务默认值", "category": "identity"},
+        ],
+    },
+    {
+        "provider_type": "mailbox",
+        "driver_type": "hstockplus_google_account",
+        "label": "HStockPlus Google Account",
+        "description": "HStockPlus Google/Gmail 成品账号，用于 Google OAuth 登录注册。",
+        "default_auth_mode": "api_key",
+        "auth_modes": [
+            {"value": "api_key", "label": "API Key"},
+        ],
+        "fields": [
+            {"key": "hstockplus_api_url", "label": "API URL", "placeholder": "https://hstockplus.com/api/v2", "category": "connection"},
+            {"key": "hstockplus_api_key", "label": "API Key", "secret": True, "category": "auth"},
+            {"key": "hstockplus_google_service_id", "label": "Google 商品/服务 ID", "placeholder": "可手动填写 HStockPlus service id", "category": "identity", "type": "hstockplus_product_select"},
+            {"key": "hstockplus_quantity", "label": "购买数量", "placeholder": "1", "category": "identity"},
+            {"key": "hstockplus_link", "label": "备注/链接", "placeholder": "可留空或填写订单备注", "category": "identity"},
+            {"key": "hstockplus_delivery_timeout", "label": "交付超时秒数", "placeholder": "300", "category": "connection"},
+            {"key": "hstockplus_request_timeout", "label": "API 请求超时秒数", "placeholder": "90", "category": "connection"},
+            {"key": "hstockplus_enterprise_contract_required", "label": "需要企业/合约确认", "type": "checkbox", "placeholder": "false", "category": "config"},
+            {"key": "hstockplus_enterprise_contract_accepted", "label": "已确认企业/合约", "type": "checkbox", "placeholder": "false", "category": "config"},
+            {"key": "hstockplus_poll_interval", "label": "轮询间隔秒数", "placeholder": "5", "category": "connection"},
+        ],
+    },
+    {
+        "provider_type": "mailbox",
+        "driver_type": "gptmail_api",
+        "label": "GPTMail API",
+        "description": "mail.chatgpt.org.uk 动态邮箱，使用 API Key 生成邮箱并轮询收件箱。",
+        "default_auth_mode": "api_key",
+        "auth_modes": [
+            {"value": "api_key", "label": "API Key"},
+        ],
+        "fields": [
+            {"key": "gptmail_api_base_url", "label": "API URL", "placeholder": "https://mail.chatgpt.org.uk", "category": "connection"},
+            {"key": "gptmail_api_key", "label": "API Key", "secret": True, "category": "auth"},
+            {"key": "gptmail_prefix", "label": "邮箱前缀", "placeholder": "可留空自动生成", "category": "identity"},
+            {"key": "gptmail_domain", "label": "邮箱域名", "placeholder": "可留空使用服务默认值", "category": "identity"},
+        ],
+    },
+]
+
+
+PHONE_DRIVER_TEMPLATES = [
+    {
+        "provider_type": "phone",
+        "driver_type": "haozhu_sms_api",
+        "label": "豪猪 SMS API",
+        "description": "豪猪接码平台。先登录获取固定 token，再按项目 ID 取手机号并轮询短信验证码。",
+        "default_auth_mode": "username_password",
+        "auth_modes": [
+            {"value": "username_password", "label": "用户名密码"},
+            {"value": "token", "label": "固定 Token"},
+            {"value": "hybrid", "label": "用户名密码 + Token"},
+        ],
+        "fields": [
+            {"key": "haozhu_api_base_url", "label": "API URL", "placeholder": "https://api.haozhuma.com", "category": "connection"},
+            {"key": "haozhu_username", "label": "API 账号", "placeholder": "网页后台 API 账号", "category": "auth"},
+            {"key": "haozhu_password", "label": "API 密码", "secret": True, "category": "auth"},
+            {"key": "haozhu_token", "label": "固定 Token（可选）", "secret": True, "category": "auth"},
+            {"key": "haozhu_project_id", "label": "项目 ID / sid", "placeholder": "1000", "category": "task"},
+            {"key": "haozhu_uid", "label": "对接码 UID（可选）", "placeholder": "只取指定对接码", "category": "task"},
+            {"key": "haozhu_author", "label": "开发者账号（可选）", "placeholder": "用于消费分成", "category": "task"},
+            {"key": "haozhu_poll_interval", "label": "短信轮询间隔秒数", "placeholder": "15", "category": "connection"},
+            {"key": "haozhu_phone_timeout", "label": "短信等待超时秒数", "placeholder": "180", "category": "connection"},
+        ],
+    },
+    {
+        "provider_type": "phone",
+        "driver_type": "qianchuan_sms_api",
+        "label": "千川 SMS API",
+        "description": "千川接码平台。支持 API 凭证登录获取永久 token，按通道 ID 取手机号、轮询共享数据、释放和拉黑号码。",
+        "default_auth_mode": "username_password",
+        "auth_modes": [
+            {"value": "username_password", "label": "用户名密码"},
+            {"value": "token", "label": "固定 Token"},
+            {"value": "hybrid", "label": "用户名密码 + Token"},
+        ],
+        "fields": [
+            {"key": "qianchuan_api_base_url", "label": "API URL", "placeholder": "https://api.qc86.shop/api", "category": "connection"},
+            {"key": "qianchuan_username", "label": "API Username", "placeholder": "网站 API 认证凭证用户名", "category": "auth"},
+            {"key": "qianchuan_password", "label": "API Password", "secret": True, "category": "auth"},
+            {"key": "qianchuan_token", "label": "固定 Token（可选）", "secret": True, "category": "auth"},
+            {"key": "qianchuan_channel_id", "label": "通道 ID / channelId", "placeholder": "1237436366606831616", "category": "task"},
+            {"key": "qianchuan_phone_num", "label": "指定手机号（可选）", "placeholder": "phoneNum，可留空随机取号", "category": "task"},
+            {"key": "qianchuan_operator", "label": "运营商过滤", "placeholder": "0=全部，5=虚拟，4=非虚拟", "category": "task"},
+            {"key": "qianchuan_scope", "label": "地区范围（可选）", "category": "task", "placeholder": "scope"},
+            {"key": "qianchuan_poll_interval", "label": "短信轮询间隔秒数", "placeholder": "5", "category": "connection"},
+            {"key": "qianchuan_phone_timeout", "label": "短信等待超时秒数", "placeholder": "180", "category": "connection"},
         ],
     },
 ]
@@ -126,13 +264,14 @@ CAPTCHA_DRIVER_TEMPLATES = [
         "provider_type": "captcha",
         "driver_type": "yescaptcha_api",
         "label": "YesCaptcha API",
-        "description": "YesCaptcha 协议族。",
+        "description": "YesCaptcha / OhMyCaptcha 兼容协议族。",
         "default_auth_mode": "api_key",
         "auth_modes": [
             {"value": "api_key", "label": "API Key"},
         ],
         "fields": [
-            {"key": "yescaptcha_key", "label": "YesCaptcha Key", "secret": True, "category": "auth"},
+            {"key": "yescaptcha_api_url", "label": "API Base URL", "placeholder": "https://api.yescaptcha.com", "category": "connection"},
+            {"key": "yescaptcha_key", "label": "Client Key / API Key", "secret": True, "category": "auth"},
         ],
     },
     {
@@ -146,6 +285,21 @@ CAPTCHA_DRIVER_TEMPLATES = [
         ],
         "fields": [
             {"key": "twocaptcha_key", "label": "2Captcha Key", "secret": True, "category": "auth"},
+        ],
+    },
+    {
+        "provider_type": "captcha",
+        "driver_type": "patchright_harvester",
+        "label": "Patchright Harvester (本地)",
+        "description": "使用 patchright Chromium 本地过 Turnstile，无需第三方打码。默认 headed 模式（headless 无法过 Turnstile）。",
+        "default_auth_mode": "endpoint_only",
+        "auth_modes": [
+            {"value": "endpoint_only", "label": "默认配置"},
+        ],
+        "fields": [
+            {"key": "harvester_headless", "label": "无头模式 (仅调试)", "placeholder": "false", "category": "connection"},
+            {"key": "harvester_max_contexts", "label": "最大并发上下文", "placeholder": "3", "category": "connection"},
+            {"key": "harvester_proxy", "label": "代理", "placeholder": "http://user:pass@host:port", "category": "connection"},
         ],
     },
 ]
@@ -195,6 +349,55 @@ BUILTIN_PROVIDER_DEFINITIONS = [
         "driver_type": "cfworker_admin_api",
     },
     {
+        "provider_type": "mailbox",
+        "provider_key": "luckmail",
+        "label": "LuckMail（已购邮箱）",
+        "description": "适配 LuckMail 已购邮箱的 token 查询模式，可直接导入 `email----token` 文本作为邮箱来源。",
+        "driver_type": "luckmail_token_query",
+    },
+    {
+        "provider_type": "mailbox",
+        "provider_key": "outlook_token",
+        "label": "Outlook 令牌邮箱（可复用）",
+        "description": "导入 `email----password----client_id----refresh_token` 后可直接收 Outlook 邮件。注册成功后邮箱会自动回池，支持跨站复用；可配置每个父邮箱最多创建多少个别名子邮箱。",
+        "driver_type": "outlook_token_imap",
+    },
+    {
+        "provider_type": "mailbox",
+        "provider_key": "yyds_mail",
+        "label": "YYDS Mail（215.im）",
+        "description": "215.im / YYDS Mail 动态邮箱，使用 API Key 自动创建邮箱并轮询收件箱。",
+        "driver_type": "yyds_mail_api",
+    },
+    {
+        "provider_type": "mailbox",
+        "provider_key": "hstockplus_google",
+        "label": "HStockPlus Google 账号",
+        "description": "通过 HStockPlus API 购买 Google/Gmail 成品账号，用作 Google OAuth 注册身份来源。",
+        "driver_type": "hstockplus_google_account",
+    },
+    {
+        "provider_type": "mailbox",
+        "provider_key": "gptmail",
+        "label": "GPTMail（动态邮箱）",
+        "description": "mail.chatgpt.org.uk 动态邮箱，使用 API Key 生成邮箱并拉取验证码或验证链接。",
+        "driver_type": "gptmail_api",
+    },
+    {
+        "provider_type": "phone",
+        "provider_key": "haozhu",
+        "label": "豪猪",
+        "description": "豪猪接码平台手机号来源，支持取号、轮询短信验证码、释放和拉黑号码。",
+        "driver_type": "haozhu_sms_api",
+    },
+    {
+        "provider_type": "phone",
+        "provider_key": "qianchuan",
+        "label": "千川",
+        "description": "千川接码平台手机号来源，支持取号、轮询共享数据、释放和拉黑号码。",
+        "driver_type": "qianchuan_sms_api",
+    },
+    {
         "provider_type": "captcha",
         "provider_key": "local_solver",
         "label": "本地 Solver (Camoufox)",
@@ -210,10 +413,24 @@ BUILTIN_PROVIDER_DEFINITIONS = [
     },
     {
         "provider_type": "captcha",
+        "provider_key": "ohmycaptcha",
+        "label": "OhMyCaptcha",
+        "description": "自建 YesCaptcha 兼容验证码服务。",
+        "driver_type": "yescaptcha_api",
+    },
+    {
+        "provider_type": "captcha",
         "provider_key": "2captcha",
         "label": "2Captcha",
         "description": "当 YesCaptcha 未配置时，协议模式会继续尝试 2Captcha。",
         "driver_type": "twocaptcha_api",
+    },
+    {
+        "provider_type": "captcha",
+        "provider_key": "patchright_harvester",
+        "label": "Patchright 本地 Harvester",
+        "description": "本地无头 Chromium 过 Turnstile，不依赖打码平台。Venice 协议模式首选。",
+        "driver_type": "patchright_harvester",
     },
 ]
 
@@ -227,6 +444,8 @@ def list_driver_templates(provider_type: str) -> list[dict]:
         return _clone(MAILBOX_DRIVER_TEMPLATES)
     if provider_type == "captcha":
         return _clone(CAPTCHA_DRIVER_TEMPLATES)
+    if provider_type == "phone":
+        return _clone(PHONE_DRIVER_TEMPLATES)
     return []
 
 

@@ -8,11 +8,25 @@ from typing import Any
 
 import requests
 
-from application.tasks import create_register_task
-from services.task_runtime import task_runtime
 from services.twoapi.importer import TwoAPIImportSchema, import_twoapi_accounts
 from services.twoapi.models import TwoAPIAccount, TwoAPISettings, mask_secret_in_text
 from services.twoapi.plugins.zo import LocalJSONResponse
+
+
+def create_register_task(payload: dict[str, Any]) -> dict[str, Any]:
+    from application.tasks import create_register_task as _create_register_task
+
+    return _create_register_task(payload)
+
+
+class _LazyTaskRuntime:
+    def wake_up(self) -> None:
+        from services.task_runtime import task_runtime as _task_runtime
+
+        _task_runtime.wake_up()
+
+
+task_runtime = _LazyTaskRuntime()
 
 ROOT = Path(__file__).resolve().parents[3]
 OUT_DIR = ROOT / "output"

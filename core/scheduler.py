@@ -1,15 +1,38 @@
 """定时任务调度 - 账号有效性检测、trial 到期提醒"""
 from datetime import datetime, timezone
+import json
+from typing import Any
 
 from sqlmodel import Session, select
 
 from .account_graph import load_account_graphs, patch_account_graph
 from .base_platform import AccountStatus, RegisterConfig
-from .db import engine, AccountModel
+from .db import engine, AccountModel, AccountOverviewModel
 from .platform_accounts import build_platform_account
 from .registry import get, load_all
 import threading
 import time
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _utc_timestamp() -> int:
+    return int(_utcnow().timestamp())
+
+
+def _summary_trial_end_time(summary_json: Any) -> int:
+    try:
+        data = json.loads(str(summary_json or "{}"))
+    except Exception:
+        return 0
+    if not isinstance(data, dict):
+        return 0
+    try:
+        return int(data.get("trial_end_time") or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 class Scheduler:
@@ -38,22 +61,34 @@ class Scheduler:
             time.sleep(3600)
 
     def check_trial_expiry(self):
-        """检查 trial 到期账号，更新状态"""
-        now = int(datetime.now(timezone.utc).timestamp())
+        """检查 trial 到期账号，更新状态。
+
+        启动时会立即执行一次；这里不能全量 load_account_graphs()，
+        否则会把 account_overviews.summary_json 全库反序列化，
+        大库启动会直接吃满内存。
+        """
+        now = _utc_timestamp()
+        expired = AccountStatus.EXPIRED.value
         with Session(engine) as s:
-            accounts = s.exec(select(AccountModel)).all()
-            graphs = load_account_graphs(s, [int(acc.id or 0) for acc in accounts if acc.id])
+            rows = s.exec(
+                select(AccountModel, AccountOverviewModel)
+                .join(AccountOverviewModel, AccountOverviewModel.account_id == AccountModel.id)
+                .where(AccountOverviewModel.lifecycle_status == AccountStatus.TRIAL.value)
+            ).all()
             updated = 0
-            for acc in accounts:
-                graph = graphs.get(int(acc.id or 0), {})
-                if graph.get("lifecycle_status") != "trial":
+            for acc, overview in rows:
+                trial_end_time = _summary_trial_end_time(overview.summary_json)
+                if not trial_end_time or trial_end_time >= now:
                     continue
-                trial_end_time = int((graph.get("overview") or {}).get("trial_end_time") or 0)
-                if trial_end_time and trial_end_time < now:
-                    acc.updated_at = datetime.now(timezone.utc)
-                    patch_account_graph(s, acc, lifecycle_status=AccountStatus.EXPIRED.value)
-                    s.add(acc)
-                    updated += 1
+                current_time = _utcnow()
+                acc.updated_at = current_time
+                overview.lifecycle_status = expired
+                overview.plan_state = expired
+                overview.display_status = expired
+                overview.updated_at = current_time
+                s.add(acc)
+                s.add(overview)
+                updated += 1
             s.commit()
             if updated:
                 print(f"[Scheduler] {updated} 个 trial 账号已到期")
