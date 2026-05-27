@@ -43,6 +43,7 @@ def list_platforms() -> list:
             "supported_executors": list(getattr(cls, "supported_executors", ["protocol"])),
             "supported_identity_modes": list(getattr(cls, "supported_identity_modes", ["mailbox"])),
             "supported_oauth_providers": list(getattr(cls, "supported_oauth_providers", [])),
+            "default_mail_provider": str(getattr(cls, "default_mail_provider", "") or ""),
         }
         override = overrides.get(cls.name) or {}
         if isinstance(override, dict):

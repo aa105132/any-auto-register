@@ -226,7 +226,7 @@ def _wait_cf_full_block_clear(page, timeout: int = 120, log_fn=print) -> None:
                             page.mouse.down()
                             time.sleep(random.uniform(0.08, 0.15))
                             page.mouse.up()
-                            log_fn(f"✅ 点击 Interstitial checkbox 坐标: ({cx:.0f}, {cy:.0f})")
+                            log_fn(f"[OK] 点击 Interstitial checkbox 坐标: ({cx:.0f}, {cy:.0f})")
                             clicked = True
                             time.sleep(3)
                             break
@@ -340,7 +340,7 @@ def _click_turnstile_in_iframe(page, log_fn=print) -> bool:
                 page.mouse.down()
                 time.sleep(random.uniform(0.08, 0.15))
                 page.mouse.up()
-                log_fn(f"✅ 点击 Turnstile checkbox 坐标: ({cx:.0f}, {cy:.0f})")
+                log_fn(f"[OK] 点击 Turnstile checkbox 坐标: ({cx:.0f}, {cy:.0f})")
                 time.sleep(1.5)
                 # 如果还没通过，再试一次偏右
                 if _is_turnstile_modal_visible(page):
@@ -360,7 +360,7 @@ def _click_turnstile_in_iframe(page, log_fn=print) -> bool:
     try:
         log_fn("尝试 frame 内坐标点击...")
         cf_frame_obj.locator("body").click(position={"x": 24, "y": 32}, timeout=5000)
-        log_fn("✅ frame 内坐标点击成功")
+        log_fn("[OK] frame 内坐标点击成功")
         return True
     except Exception as e:
         log_fn(f"frame 内点击失败: {e}")
@@ -450,7 +450,7 @@ class CursorBrowserRegister:
             self.log(f"调用 Captcha Solver 解题 ({sitekey[:20]}...)...")
             token = self.captcha.solve_turnstile(url, sitekey or TURNSTILE_SITEKEY)
             if token:
-                self.log(f"✅ Solver 返回 token: {token[:50]}...")
+                self.log(f"[OK] Solver 返回 token: {token[:50]}...")
             return token
         except Exception as e:
             self.log(f"⚠️ Captcha Solver 失败: {e}")

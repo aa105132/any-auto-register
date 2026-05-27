@@ -12,11 +12,13 @@ export const EXECUTOR_LABELS: Record<string, string> = {
   protocol: '协议模式',
   headless: '后台浏览器自动',
   headed: '可视浏览器自动',
+  cdp_protocol: 'CDP 协议混合',
 }
 
 export const IDENTITY_MODE_LABELS: Record<string, string> = {
   mailbox: '系统邮箱',
   oauth_browser: '第三方账号',
+  phone: '手机号',
 }
 
 export function hasReusableOAuthBrowser(config: { chrome_user_data_dir?: string; chrome_cdp_url?: string }) {
@@ -84,6 +86,16 @@ export function buildRegistrationOptions(platformMeta: any) {
     })
   }
 
+  if (supportedModes.includes('phone')) {
+    options.push({
+      key: 'phone',
+      label: '手机号注册',
+      description: '输入接码项目 ID，系统自动取号、收码并创建 API Key',
+      identityProvider: 'phone',
+      oauthProvider: '',
+    })
+  }
+
   return options
 }
 
@@ -103,10 +115,6 @@ export function buildExecutorOptions(
 
     if (executor === 'protocol') {
       option.description = '不打开浏览器，直接通过协议流程自动注册'
-      if (identityProvider !== 'mailbox') {
-        option.disabled = true
-        option.reason = '第三方账号注册必须通过浏览器自动化完成'
-      }
       return option
     }
 
@@ -118,6 +126,13 @@ export function buildExecutorOptions(
         option.disabled = true
         option.reason = '需要先在全局配置里填写 Chrome Profile 路径或 Chrome CDP 地址'
       }
+      return option
+    }
+
+    if (executor === 'cdp_protocol') {
+      option.description = identityProvider === 'mailbox'
+        ? 'CDP 启动 Chrome 过 Turnstile，其余步骤走协议，兼顾速度和通过率'
+        : '使用隔离 Chrome Profile 执行 OAuth，再通过协议创建 API Key'
       return option
     }
 

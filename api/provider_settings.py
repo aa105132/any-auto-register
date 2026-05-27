@@ -49,3 +49,13 @@ def delete_provider_setting(setting_id: int):
     if not result["ok"]:
         raise HTTPException(404, "provider setting 不存在")
     return result
+
+
+@router.get("/hstockplus-google/products")
+def list_hstockplus_google_products(lang: str = "zh"):
+    try:
+        return service.list_hstockplus_google_products(lang=lang)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(502, str(exc))

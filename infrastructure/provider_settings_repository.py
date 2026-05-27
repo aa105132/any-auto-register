@@ -63,12 +63,12 @@ class ProviderSettingsRepository:
         configured = [
             item.provider_key
             for item in self.list_enabled("captcha")
-            if item.provider_key not in {"", "manual", "local_solver"}
+            if item.provider_key not in {"", "manual"}
         ]
         merged: list[str] = []
         for key in configured + list(fallback_order or []):
             normalized = str(key or "").strip()
-            if not normalized or normalized in {"manual", "local_solver"} or normalized in merged:
+            if not normalized or normalized in {"manual"} or normalized in merged:
                 continue
             merged.append(normalized)
         return merged
@@ -168,6 +168,8 @@ class ProviderSettingsRepository:
             default_key = legacy_all.get("mail_provider", "")
         elif provider_type == "captcha":
             default_key = legacy_all.get("default_captcha_solver", "")
+        elif provider_type == "phone":
+            default_key = legacy_all.get("phone_provider", "")
 
         with Session(engine) as session:
             existing_items = session.exec(
@@ -203,7 +205,7 @@ class ProviderSettingsRepository:
         auth: dict[str, str] = {}
         for field in definition.get_fields():
             key = str(field.get("key") or "")
-            if not key:
+            if not key or field.get("category") == "task":
                 continue
             value = str(legacy_all.get(key, "") or "")
             if not value:
@@ -222,7 +224,7 @@ class ProviderSettingsRepository:
         merged.update(item.get_auth())
         for field in definition.get_fields():
             key = str(field.get("key") or "")
-            if not key:
+            if not key or field.get("category") == "task":
                 continue
             flat[key] = str(merged.get(key, "") or "")
 
@@ -230,6 +232,8 @@ class ProviderSettingsRepository:
             flat["mail_provider"] = item.provider_key
         if provider_type == "captcha" and item.is_default:
             flat["default_captcha_solver"] = item.provider_key
+        if provider_type == "phone" and item.is_default:
+            flat["phone_provider"] = item.provider_key
 
         if flat:
             config_store.set_many(flat)

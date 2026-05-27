@@ -230,6 +230,7 @@ class PlatformRuntime:
                         supported_executors=list(item.get("supported_executors", [])),
                         supported_identity_modes=list(item.get("supported_identity_modes", [])),
                         supported_oauth_providers=list(item.get("supported_oauth_providers", [])),
+                        default_mail_provider=str(item.get("default_mail_provider") or ""),
                     ),
                 )
             )
@@ -265,7 +266,12 @@ class PlatformRuntime:
         instance = platform_cls(config=RegisterConfig())
         return instance.get_desktop_state() or {"available": False}
 
-    def execute_action(self, command: ActionExecutionCommand) -> ActionExecutionResult:
+    def execute_action(
+        self,
+        command: ActionExecutionCommand,
+        *,
+        log_fn: Callable[[str], None] | None = None,
+    ) -> ActionExecutionResult:
         load_all()
         with Session(engine) as session:
             model = session.get(AccountModel, command.account_id)
@@ -274,6 +280,8 @@ class PlatformRuntime:
 
             platform_cls = get(command.platform)
             instance = platform_cls(config=RegisterConfig())
+            if log_fn:
+                instance.set_logger(log_fn)
             account = build_platform_account(session, model)
             try:
                 result: dict[str, Any] = instance.execute_action(command.action_id, account, command.params)

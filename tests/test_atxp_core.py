@@ -2,6 +2,7 @@ import datetime as dt
 import json
 
 import pytest
+import requests
 from requests.cookies import RequestsCookieJar
 
 from platforms.atxp.core import AtxpClient
@@ -54,11 +55,12 @@ PRIVY_HEADERS_BASE = {
 
 
 class _DummyResponse:
-    def __init__(self, payload=None, text=None, cookies=None, json_error=None):
+    def __init__(self, payload=None, text=None, cookies=None, json_error=None, status_code=200):
         self._payload = {} if payload is None else payload
         self._json_error = json_error
         self.text = text if text is not None else json.dumps(self._payload)
         self.cookies = cookies or RequestsCookieJar()
+        self.status_code = status_code
 
     def json(self):
         if self._json_error is not None:
@@ -66,6 +68,11 @@ class _DummyResponse:
         return self._payload
 
     def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.HTTPError(
+                f"{self.status_code} Server Error: Service Unavailable for url: https://llm.atxp.ai/v1/models",
+                response=self,
+            )
         return None
 
 
@@ -356,3 +363,103 @@ def test_probe_gateway_connection_rejects_non_list_data_payload():
         client.probe_gateway_connection(
             connection_string="https://accounts.atxp.ai?connection_token=conn-1"
         )
+
+
+def test_probe_gateway_connection_retries_on_503(monkeypatch):
+    session = _DummySession()
+    session.queue_get(_DummyResponse(payload={"detail": "verifying"}, status_code=503))
+    session.queue_get(
+        _DummyResponse(
+            payload={"data": [{"id": "gpt-4.1-mini"}]},
+            status_code=200,
+        )
+    )
+    sleeps: list[float] = []
+    monkeypatch.setattr("platforms.atxp.core.time.sleep", lambda seconds: sleeps.append(seconds))
+    client = AtxpClient(session=session)
+
+    result = client.probe_gateway_connection(connection_string="https://accounts.atxp.ai?connection_token=conn-1")
+
+    assert result["model"] == "gpt-4.1-mini"
+    assert sleeps == [3.0]
+    assert [call[0] for call in session.calls] == ["get", "get"]
+
+
+def test_complete_clowdbot_tasks_returns_retry_summary(monkeypatch):
+    """Mock the OIDC login + clowdbot API calls to verify orchestration logic."""
+    client = AtxpClient(session=_DummySession())
+
+    fake_cb_session = object()  # opaque sentinel — only passed through to _clowdbot_api
+
+    # _clowdbot_oidc_login just returns the fake session
+    monkeypatch.setattr(client, "_clowdbot_oidc_login", lambda privy_token: fake_cb_session)
+
+    # Track API calls and return canned responses
+    api_calls: list[tuple[str, str]] = []
+    api_responses: dict[str, dict] = {
+        "/auth/check": {"authenticated": True},
+        "/user": {"id": "user-1"},
+        "/onboarding/steps": {
+            "steps": [],
+            "completedCount": 0,
+            "totalSteps": 2,
+        },
+        "POST /onboarding/complete/create_clowdbot": {
+            "status": "completed",
+            "creditDisplay": "+10 IOU",
+        },
+        "/onboarding/check-email/demo": {
+            "available": True,
+            "email": "demo@atxp.email",
+        },
+        "POST /onboarding/complete/claim_email": {
+            "status": "completed",
+            "creditDisplay": "+10 IOU",
+        },
+        # Second read of /onboarding/steps (final state)
+        "final /onboarding/steps": {
+            "steps": [
+                {"slug": "create_clowdbot", "completed": True},
+                {"slug": "claim_email", "completed": True},
+            ],
+            "completedCount": 2,
+            "totalSteps": 2,
+            "totalEarnedDisplay": "+20 IOU",
+        },
+        "/instance": {
+            "instances": [{"id": "instance-from-api"}],
+        },
+    }
+
+    steps_call_count = [0]
+
+    def _fake_clowdbot_api(_cb_session, path, *, method="GET", json_body=None):
+        api_calls.append((method, path))
+        key = f"{method} {path}" if method != "GET" else path
+
+        # /onboarding/steps is called twice: initial + final
+        if path == "/onboarding/steps":
+            steps_call_count[0] += 1
+            if steps_call_count[0] >= 2:
+                return dict(api_responses["final /onboarding/steps"])
+            return dict(api_responses["/onboarding/steps"])
+
+        if key in api_responses:
+            return dict(api_responses[key])
+        raise RuntimeError(f"Unmocked clowdbot API call: {key}")
+
+    monkeypatch.setattr(client, "_clowdbot_api", _fake_clowdbot_api)
+
+    result = client.complete_clowdbot_tasks(
+        privy_token="privy-token",
+        account_id="acct-1",
+        email="demo@example.com",
+    )
+
+    assert result == {
+        "instance_id": "instance-from-api",
+        "claimed_agent_email": "demo@atxp.email",
+        "create_clowdbot_completed": True,
+        "claim_email_completed": True,
+        "reward_progress": {"completed": 2, "total": 2, "earned": "+20 IOU"},
+    }

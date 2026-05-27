@@ -23,6 +23,9 @@ PLATFORM_CREDENTIAL_TYPES: dict[str, str] = {
     "refresh_token": "token",
     "session_token": "token",
     "id_token": "token",
+    "jwtToken": "token",
+    "csrf_token": "token",
+    "cbbot_key": "identifier",
     "client_id": "identifier",
     "client_secret": "secret",
     "workspace_id": "identifier",
@@ -46,6 +49,11 @@ PLATFORM_CREDENTIAL_TYPES: dict[str, str] = {
     "wallet_address": "identifier",
     "clowdbot_instance_id": "identifier",
     "claimed_agent_email": "identifier",
+    "ai_api_token": "token",
+    "session_id": "token",
+    "sessionId": "token",
+    "wasp_session_id": "token",
+    "entercloud_anon_key": "secret",
 }
 
 PRIMARY_TOKEN_WRITE_KEYS: dict[str, str] = {
@@ -54,7 +62,10 @@ PRIMARY_TOKEN_WRITE_KEYS: dict[str, str] = {
     "kiro": "accessToken",
     "trae": "legacy_token",
     "openblocklabs": "wos_session",
+    "codebanana": "session_token",
     "atxp": "connection_string",
+    "venice": "access_token",
+    "blendspace": "session_id",
 }
 
 NON_LEGACY_EXTRA_KEYS = {
@@ -384,7 +395,16 @@ def _provider_accounts_from_extra(extra: dict[str, Any]) -> list[dict[str, Any]]
                 "provider_name": identity_mailbox.get("provider"),
                 "login_identifier": identity_mailbox.get("email"),
                 "display_name": identity_mailbox.get("email"),
-                "metadata": {"account_id": identity_mailbox.get("account_id")},
+                "credentials": {
+                    "mailbox_jwt": identity_mailbox.get("mailbox_jwt"),
+                    "address_password": identity_mailbox.get("address_password"),
+                },
+                "metadata": {
+                    "account_id": identity_mailbox.get("account_id"),
+                    "address_id": identity_mailbox.get("address_id"),
+                    "api_url": identity_mailbox.get("api_url"),
+                    "auth_mode": identity_mailbox.get("auth_mode"),
+                },
             }
         )
 
@@ -396,7 +416,16 @@ def _provider_accounts_from_extra(extra: dict[str, Any]) -> list[dict[str, Any]]
                 "provider_name": mailbox.get("provider"),
                 "login_identifier": mailbox.get("email"),
                 "display_name": mailbox.get("email"),
-                "metadata": {"account_id": mailbox.get("account_id")},
+                "credentials": {
+                    "mailbox_jwt": mailbox.get("mailbox_jwt"),
+                    "address_password": mailbox.get("address_password"),
+                },
+                "metadata": {
+                    "account_id": mailbox.get("account_id"),
+                    "address_id": mailbox.get("address_id"),
+                    "api_url": mailbox.get("api_url"),
+                    "auth_mode": mailbox.get("auth_mode"),
+                },
             }
         )
 
@@ -409,7 +438,16 @@ def _provider_accounts_from_extra(extra: dict[str, Any]) -> list[dict[str, Any]]
         display_name = _text(item.get("display_name") or login_identifier or provider_name)
         credentials = _safe_dict(item.get("credentials"))
         metadata = _safe_dict(item.get("metadata"))
-        for field in ("email", "username", "account_id", "api_url", "login_url", "auth_type"):
+        for field in (
+            "email",
+            "username",
+            "account_id",
+            "address_id",
+            "api_url",
+            "login_url",
+            "auth_type",
+            "auth_mode",
+        ):
             text = _text(item.get(field))
             if text and field not in metadata:
                 metadata[field] = text
@@ -449,7 +487,10 @@ def _provider_resources_from_extra(extra: dict[str, Any]) -> list[dict[str, Any]
                 "display_name": identity_mailbox.get("email"),
                 "metadata": {
                     "account_id": identity_mailbox.get("account_id"),
+                    "address_id": identity_mailbox.get("address_id"),
                     "email": identity_mailbox.get("email"),
+                    "api_url": identity_mailbox.get("api_url"),
+                    "auth_mode": identity_mailbox.get("auth_mode"),
                 },
             }
         )
@@ -465,7 +506,10 @@ def _provider_resources_from_extra(extra: dict[str, Any]) -> list[dict[str, Any]
                 "display_name": mailbox.get("email"),
                 "metadata": {
                     "account_id": mailbox.get("account_id"),
+                    "address_id": mailbox.get("address_id"),
                     "email": mailbox.get("email"),
+                    "api_url": mailbox.get("api_url"),
+                    "auth_mode": mailbox.get("auth_mode"),
                 },
             }
         )
@@ -485,20 +529,30 @@ def _provider_resources_from_extra(extra: dict[str, Any]) -> list[dict[str, Any]
         handle = _text(item.get("handle") or item.get("email") or item.get("address"))
         display_name = _text(item.get("display_name") or handle or resource_identifier)
         metadata = _safe_dict(item.get("metadata"))
-        for field in ("email", "account_id", "address", "api_url"):
+        for field in ("email", "account_id", "address_id", "address", "api_url", "auth_mode"):
             text = _text(item.get(field))
             if text and field not in metadata:
                 metadata[field] = text
         key = (provider_type, provider_name, resource_type, resource_identifier or handle)
-        normalized[key] = {
-            "provider_type": provider_type,
-            "provider_name": provider_name,
-            "resource_type": resource_type,
-            "resource_identifier": resource_identifier,
-            "handle": handle,
-            "display_name": display_name,
-            "metadata": metadata,
-        }
+        existing = normalized.get(key)
+        if existing:
+            if handle and not existing.get("handle"):
+                existing["handle"] = handle
+            if display_name and not existing.get("display_name"):
+                existing["display_name"] = display_name
+            existing["metadata"].update(
+                {k: v for k, v in metadata.items() if _text(v) or isinstance(v, (dict, list))}
+            )
+        else:
+            normalized[key] = {
+                "provider_type": provider_type,
+                "provider_name": provider_name,
+                "resource_type": resource_type,
+                "resource_identifier": resource_identifier,
+                "handle": handle,
+                "display_name": display_name,
+                "metadata": metadata,
+            }
     return list(normalized.values())
 
 

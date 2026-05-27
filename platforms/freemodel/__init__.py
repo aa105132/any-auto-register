@@ -1,0 +1,1 @@
+"""FreeModel platform plugin."""

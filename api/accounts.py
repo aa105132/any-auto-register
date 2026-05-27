@@ -60,6 +60,20 @@ class BatchExportRequest(BaseModel):
     status_filter: Optional[str] = None
     email_service_filter: Optional[str] = None
     search_filter: Optional[str] = None
+    field_keys: list[str] = Field(default_factory=list)
+    exclude_zero_balance: bool = False
+
+
+def _build_export_selection(body: BatchExportRequest) -> AccountExportSelection:
+    return AccountExportSelection(
+        platform=body.platform,
+        ids=body.ids,
+        select_all=body.select_all,
+        status_filter=body.status_filter or "",
+        search_filter=body.search_filter or "",
+        field_keys=body.field_keys,
+        exclude_zero_balance=body.exclude_zero_balance,
+    )
 
 
 def _stream_artifact(artifact: ExportArtifact) -> StreamingResponse:
@@ -97,6 +111,11 @@ def get_stats():
     return service.get_stats()
 
 
+@router.get("/export/fields")
+def list_export_fields(platform: str = ""):
+    return exports_service.list_export_fields(platform)
+
+
 @router.get("/export")
 def export_accounts(platform: str = "", status: str = ""):
     content = service.export_csv(AccountQuery(platform=platform, status=status, page=1, page_size=100000))
@@ -110,15 +129,7 @@ def export_accounts(platform: str = "", status: str = ""):
 @router.post("/export/json")
 def export_accounts_json(body: BatchExportRequest):
     try:
-        artifact = exports_service.export_chatgpt_json(
-            AccountExportSelection(
-                platform=body.platform,
-                ids=body.ids,
-                select_all=body.select_all,
-                status_filter=body.status_filter or "",
-                search_filter=body.search_filter or "",
-            )
-        )
+        artifact = exports_service.export_json(_build_export_selection(body))
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     return _stream_artifact(artifact)
@@ -127,15 +138,16 @@ def export_accounts_json(body: BatchExportRequest):
 @router.post("/export/csv")
 def export_accounts_csv(body: BatchExportRequest):
     try:
-        artifact = exports_service.export_chatgpt_csv(
-            AccountExportSelection(
-                platform=body.platform,
-                ids=body.ids,
-                select_all=body.select_all,
-                status_filter=body.status_filter or "",
-                search_filter=body.search_filter or "",
-            )
-        )
+        artifact = exports_service.export_csv(_build_export_selection(body))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return _stream_artifact(artifact)
+
+
+@router.post("/export/txt")
+def export_accounts_txt(body: BatchExportRequest):
+    try:
+        artifact = exports_service.export_txt(_build_export_selection(body))
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     return _stream_artifact(artifact)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from core.provider_drivers import CAPTCHA_POLICY
+from core.base_mailbox import HStockPlusGoogleAccountProvider
 from infrastructure.provider_definitions_repository import ProviderDefinitionsRepository
 from infrastructure.provider_settings_repository import ProviderSettingsRepository
 
@@ -41,6 +42,15 @@ class ProviderSettingsService:
             "captcha_settings": self.list_settings("captcha"),
             "captcha_policy": self.get_captcha_policy(),
         }
+
+
+    def list_hstockplus_google_products(self, *, lang: str = "zh") -> dict:
+        runtime = self.repository.resolve_runtime_settings("mailbox", "hstockplus_google", {})
+        client = HStockPlusGoogleAccountProvider(
+            api_base_url=runtime.get("hstockplus_api_url"),
+            api_key=runtime.get("hstockplus_api_key", ""),
+        )
+        return {"products": client.list_google_products(lang=lang)}
 
     def get_captcha_policy(self) -> dict:
         policy = dict(CAPTCHA_POLICY)

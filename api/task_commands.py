@@ -18,6 +18,7 @@ class RegisterTaskRequest(BaseModel):
     platform: str
     email: Optional[str] = None
     password: Optional[str] = None
+    lines: list[str] = Field(default_factory=list)
     count: int = 1
     concurrency: int = 1
     proxy: Optional[str] = None
@@ -28,7 +29,10 @@ class RegisterTaskRequest(BaseModel):
 
 @router.post("/register")
 def create_register_task(body: RegisterTaskRequest):
-    return command_service.create_register_task(body.model_dump())
+    try:
+        return command_service.create_register_task(body.model_dump())
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @router.post("/{task_id}/cancel")

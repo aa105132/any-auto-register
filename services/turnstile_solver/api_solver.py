@@ -18,6 +18,11 @@ from rich.text import Text
 from rich.align import Align
 from rich import box
 
+try:
+    from .proxy_utils import parse_playwright_proxy
+except ImportError:  # pragma: no cover - 兼容直接脚本运行
+    from proxy_utils import parse_playwright_proxy
+
 
 
 COLORS = {
@@ -142,7 +147,10 @@ class TurnstileAPIServer:
 
     async def _startup(self) -> None:
         """Initialize the browser and page pool on startup."""
-        self.display_welcome()
+        try:
+            self.display_welcome()
+        except Exception:
+            logger.info("Turnstile Solver starting...")
         logger.info("Starting browser initialization")
         try:
             await init_db()
@@ -645,68 +653,26 @@ class TurnstileAPIServer:
                 proxy = None
 
             if proxy:
-                if '@' in proxy:
-                    try:
-                        scheme_part, auth_part = proxy.split('://')
-                        auth, address = auth_part.split('@')
-                        username, password = auth.split(':')
-                        ip, port = address.split(':')
-                        if self.debug:
-                            logger.debug(f"Browser {index}: Creating context with proxy {scheme_part}://{ip}:{port} (auth: {username}:***)")
-                        context_options = {
-                            "proxy": {
-                                "server": f"{scheme_part}://{ip}:{port}",
-                                "username": username,
-                                "password": password
-                            },
-                            "user_agent": browser_config['useragent']
-                        }
-                        
-                        if browser_config['sec_ch_ua'] and browser_config['sec_ch_ua'].strip():
-                            context_options['extra_http_headers'] = {
-                                'sec-ch-ua': browser_config['sec_ch_ua']
-                            }
-                        
-                        context = await browser.new_context(**context_options)
-                    except ValueError:
-                        raise ValueError(f"Invalid proxy format: {proxy}")
-                else:
-                    parts = proxy.split(':')
-                    if len(parts) == 5:
-                        proxy_scheme, proxy_ip, proxy_port, proxy_user, proxy_pass = parts
-                        if self.debug:
-                            logger.debug(f"Browser {index}: Creating context with proxy {proxy_scheme}://{proxy_ip}:{proxy_port} (auth: {proxy_user}:***)")
-                        context_options = {
-                            "proxy": {
-                                "server": f"{proxy_scheme}://{proxy_ip}:{proxy_port}",
-                                "username": proxy_user,
-                                "password": proxy_pass
-                            },
-                            "user_agent": browser_config['useragent']
-                        }
-                        
-                        if browser_config['sec_ch_ua'] and browser_config['sec_ch_ua'].strip():
-                            context_options['extra_http_headers'] = {
-                                'sec-ch-ua': browser_config['sec_ch_ua']
-                            }
-                        
-                        context = await browser.new_context(**context_options)
-                    elif len(parts) == 3:
-                        if self.debug:
-                            logger.debug(f"Browser {index}: Creating context with proxy {proxy}")
-                        context_options = {
-                            "proxy": {"server": f"{proxy}"},
-                            "user_agent": browser_config['useragent']
-                        }
-                        
-                        if browser_config['sec_ch_ua'] and browser_config['sec_ch_ua'].strip():
-                            context_options['extra_http_headers'] = {
-                                'sec-ch-ua': browser_config['sec_ch_ua']
-                            }
-                        
-                        context = await browser.new_context(**context_options)
+                proxy_options = parse_playwright_proxy(proxy)
+                if self.debug:
+                    if "username" in proxy_options:
+                        logger.debug(
+                            f"Browser {index}: Creating context with proxy {proxy_options['server']} "
+                            f"(auth: {proxy_options['username']}:***)"
+                        )
                     else:
-                        raise ValueError(f"Invalid proxy format: {proxy}")
+                        logger.debug(f"Browser {index}: Creating context with proxy {proxy_options['server']}")
+                context_options = {
+                    "proxy": proxy_options,
+                    "user_agent": browser_config['useragent']
+                }
+
+                if browser_config['sec_ch_ua'] and browser_config['sec_ch_ua'].strip():
+                    context_options['extra_http_headers'] = {
+                        'sec-ch-ua': browser_config['sec_ch_ua']
+                    }
+
+                context = await browser.new_context(**context_options)
             else:
                 if self.debug:
                     logger.debug(f"Browser {index}: Creating context without proxy")
@@ -732,24 +698,32 @@ class TurnstileAPIServer:
         
         await self._antishadow_inject(page)
         
-        await self._block_rendering(page)
-        
+        # Skip resource blocking for Clerk/Venice — full rendering needed for form
+        _is_clerk_page = 'venice.ai' in url.lower() or 'clerk' in url.lower()
+        if not _is_clerk_page:
+            await self._block_rendering(page)
+
         await page.add_init_script("""
         Object.defineProperty(navigator, 'webdriver', {
             get: () => undefined,
         });
-        
+
         window.chrome = {
             runtime: {},
             loadTimes: function() {},
             csi: function() {},
         };
         """)
-        
+
         if self.browser_type in ['chromium', 'chrome', 'msedge']:
-            await page.set_viewport_size({"width": 500, "height": 100})
-            if self.debug:
-                logger.debug(f"Browser {index}: Set viewport size to 500x240")
+            if _is_clerk_page:
+                await page.set_viewport_size({"width": 1280, "height": 800})
+                if self.debug:
+                    logger.debug(f"Browser {index}: Set viewport size to 1280x800 (Clerk form)")
+            else:
+                await page.set_viewport_size({"width": 500, "height": 100})
+                if self.debug:
+                    logger.debug(f"Browser {index}: Set viewport size to 500x100")
 
         start_time = time.time()
 
@@ -763,8 +737,9 @@ class TurnstileAPIServer:
 
             await page.goto(url, wait_until='networkidle', timeout=30000)
 
-            await self._unblock_rendering(page)
-            
+            if not _is_clerk_page:
+                await self._unblock_rendering(page)
+
             # Wait for turnstile to load (it may be lazy loaded)
             if self.debug:
                 logger.debug(f"Browser {index}: Waiting for turnstile to appear...")
@@ -793,11 +768,11 @@ class TurnstileAPIServer:
             if not turnstile_found:
                 if self.debug:
                     logger.debug(f"Browser {index}: Turnstile not found naturally, will inject our own")
-            
+
             # Сразу инъектируем виджет Turnstile на целевой сайт
             if self.debug:
                 logger.debug(f"Browser {index}: Injecting Turnstile widget directly into target site")
-            
+
             # Debug: Check page state before injection
             if self.debug:
                 widget_count = await page.locator('.cf-turnstile, [data-sitekey]').count()
@@ -809,9 +784,9 @@ class TurnstileAPIServer:
                     logger.debug(f"Browser {index}: Found sitekey: {sitekey_elem}")
                 except:
                     pass
-            
+
             inject_result = await self._inject_captcha_directly(page, sitekey, action or '', cdata or '', index)
-            
+
             if self.debug:
                 if inject_result == 'existing':
                     logger.debug(f"Browser {index}: Using existing turnstile widget on page")

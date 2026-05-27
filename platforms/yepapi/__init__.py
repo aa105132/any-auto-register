@@ -1,0 +1,1 @@
+"""YepAPI OAuth platform plugin."""

@@ -16,7 +16,7 @@ class TaskWorkerState:
 
 
 class TaskRuntime:
-    def __init__(self, *, max_parallel_tasks: int = 3, max_parallel_per_platform: int = 1, poll_interval: float = 0.5):
+    def __init__(self, *, max_parallel_tasks: int = 100, max_parallel_per_platform: int = 100, poll_interval: float = 0.5):
         self.max_parallel_tasks = max_parallel_tasks
         self.max_parallel_per_platform = max_parallel_per_platform
         self.poll_interval = poll_interval

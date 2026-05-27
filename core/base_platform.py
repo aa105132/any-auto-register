@@ -1,7 +1,7 @@
 """平台插件基类"""
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 from enum import Enum
 import random
 import string
@@ -35,10 +35,36 @@ class Account:
 @dataclass
 class RegisterConfig:
     """注册任务配置"""
-    executor_type: str = "protocol"   # protocol | headless | headed
+    executor_type: str = "protocol"   # protocol | headless | headed | cdp_protocol
     captcha_solver: str = "auto"  # auto | yescaptcha | 2captcha | local_solver | manual
     proxy: Optional[str] = None
     extra: dict = field(default_factory=dict)
+
+
+def _json_safe(value: Any, *, _seen: set[int] | None = None) -> Any:
+    """把平台结果/身份元数据清洗成可 JSON 序列化结构，避免循环引用阻断保存。"""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, Enum):
+        return value.value
+    if _seen is None:
+        _seen = set()
+    obj_id = id(value)
+    if obj_id in _seen:
+        return "<circular>"
+    if isinstance(value, dict):
+        _seen.add(obj_id)
+        try:
+            return {str(key): _json_safe(item, _seen=_seen) for key, item in value.items()}
+        finally:
+            _seen.discard(obj_id)
+    if isinstance(value, (list, tuple, set)):
+        _seen.add(obj_id)
+        try:
+            return [_json_safe(item, _seen=_seen) for item in value]
+        finally:
+            _seen.discard(obj_id)
+    return str(value)
 
 
 class BasePlatform(ABC):
@@ -65,7 +91,15 @@ class BasePlatform(ABC):
         self._log_fn = logger or print
 
     def log(self, message: str):
-        self._log_fn(message)
+        try:
+            self._log_fn(message)
+        except UnicodeEncodeError:
+            import sys as _sys
+            try:
+                _sys.stdout.buffer.write(message.encode("utf-8", errors="replace") + b"\n")
+                _sys.stdout.buffer.flush()
+            except Exception:
+                pass
 
     def _make_random_password(self, length: int = 16, charset: Optional[str] = None) -> str:
         chars = charset or (string.ascii_letters + string.digits + "!@#$")
@@ -88,6 +122,9 @@ class BasePlatform(ABC):
 
     def build_protocol_oauth_adapter(self):
         return None
+
+    def _should_use_browser_registration_flow(self, identity) -> bool:
+        return (self.config.executor_type or "") in ("headless", "headed")
 
     def _account_from_registration_result(self, result: RegistrationResult) -> Account:
         status = result.status or AccountStatus.REGISTERED
@@ -122,7 +159,7 @@ class BasePlatform(ABC):
             log_fn=self.log,
         )
 
-        if (self.config.executor_type or "") in ("headless", "headed"):
+        if self._should_use_browser_registration_flow(identity):
             self.log(f"使用浏览器模式注册: {self._browser_registration_label(identity)}")
             adapter = self.build_browser_registration_adapter()
             if adapter is None:
@@ -213,6 +250,9 @@ class BasePlatform(ABC):
         if self.config.executor_type in {"headless", "headed"}:
             return "local_solver"
 
+        if self.config.executor_type == "cdp_protocol":
+            return "cdp_turnstile"
+
         protocol_order = list(self.protocol_captcha_order)
         try:
             from infrastructure.provider_settings_repository import ProviderSettingsRepository
@@ -268,15 +308,30 @@ class BasePlatform(ABC):
         mailbox_account = getattr(identity, "mailbox_account", None)
         if mailbox_account:
             mailbox_extra = dict(getattr(mailbox_account, "extra", {}) or {})
-            snapshot["mailbox"] = {
+            mailbox_snapshot = {
                 "provider": (self.config.extra or {}).get("mail_provider", ""),
                 "email": getattr(mailbox_account, "email", "") or "",
                 "account_id": str(getattr(mailbox_account, "account_id", "") or ""),
             }
-            if isinstance(mailbox_extra.get("provider_account"), dict):
-                snapshot["provider_account"] = mailbox_extra["provider_account"]
-            if isinstance(mailbox_extra.get("provider_resource"), dict):
-                snapshot["provider_resource"] = mailbox_extra["provider_resource"]
+            provider_account = mailbox_extra.get("provider_account")
+            if isinstance(provider_account, dict):
+                snapshot["provider_account"] = _json_safe(provider_account)
+                credentials = provider_account.get("credentials")
+                if isinstance(credentials, dict):
+                    for field in ("mailbox_jwt", "address_password"):
+                        value = credentials.get(field)
+                        if value not in (None, ""):
+                            mailbox_snapshot[field] = value
+            provider_resource = mailbox_extra.get("provider_resource")
+            if isinstance(provider_resource, dict):
+                snapshot["provider_resource"] = _json_safe(provider_resource)
+                metadata = provider_resource.get("metadata")
+                if isinstance(metadata, dict):
+                    for field in ("address_id", "api_url", "auth_mode"):
+                        value = metadata.get(field)
+                        if value not in (None, ""):
+                            mailbox_snapshot[field] = value
+            snapshot["mailbox"] = mailbox_snapshot
         return snapshot
 
     def _attach_identity_metadata(self, account: Account, identity=None) -> Account:
@@ -285,9 +340,13 @@ class BasePlatform(ABC):
             return account
         extra = dict(account.extra or {})
         identity_snapshot = self._build_identity_snapshot(actual_identity)
-        extra["identity"] = identity_snapshot
+        extra["identity"] = _json_safe(identity_snapshot)
         if identity_snapshot.get("mailbox"):
-            extra["verification_mailbox"] = identity_snapshot["mailbox"]
+            mailbox = dict(extra.get("verification_mailbox", {}) or {})
+            for field, value in dict(identity_snapshot["mailbox"] or {}).items():
+                if field in {"provider", "email", "account_id"} or field not in mailbox:
+                    mailbox[field] = value
+            extra["verification_mailbox"] = mailbox
         provider_accounts = list(extra.get("provider_accounts", []) or [])
         if isinstance(identity_snapshot.get("provider_account"), dict):
             provider_accounts.append(identity_snapshot["provider_account"])
@@ -298,5 +357,23 @@ class BasePlatform(ABC):
             provider_resources.append(identity_snapshot["provider_resource"])
         if provider_resources:
             extra["provider_resources"] = provider_resources
-        account.extra = extra
+        phone_provider = getattr(self, "phone_provider", None)
+        phone_account = getattr(phone_provider, "_last_account", None) if phone_provider else None
+        if phone_account:
+            phone_extra = dict(getattr(phone_account, "extra", {}) or {})
+            phone_snapshot = {
+                "provider": (self.config.extra or {}).get("phone_provider", ""),
+                "phone": getattr(phone_account, "phone", "") or "",
+                "project_id": getattr(phone_account, "project_id", "") or "",
+            }
+            extra["verification_phone"] = {**dict(extra.get("verification_phone", {}) or {}), **phone_snapshot}
+            phone_provider_account = phone_extra.get("provider_account")
+            if isinstance(phone_provider_account, dict):
+                provider_accounts.append(_json_safe(phone_provider_account))
+                extra["provider_accounts"] = provider_accounts
+            phone_provider_resource = phone_extra.get("provider_resource")
+            if isinstance(phone_provider_resource, dict):
+                provider_resources.append(_json_safe(phone_provider_resource))
+                extra["provider_resources"] = provider_resources
+        account.extra = _json_safe(extra)
         return account

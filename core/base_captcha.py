@@ -15,9 +15,9 @@ class BaseCaptcha(ABC):
 
 
 class YesCaptcha(BaseCaptcha):
-    def __init__(self, client_key: str):
+    def __init__(self, client_key: str, api_base: str = "https://api.yescaptcha.com"):
         self.client_key = client_key
-        self.api = "https://api.yescaptcha.com"
+        self.api = str(api_base or "https://api.yescaptcha.com").rstrip("/")
 
     def solve_turnstile(self, page_url: str, site_key: str) -> str:
         import requests, time, urllib3
@@ -174,6 +174,630 @@ class LocalSolverCaptcha(BaseCaptcha):
         raise RuntimeError("LocalSolver 启动超时")
 
 
+class CdpTurnstileSolver(BaseCaptcha):
+
+    DEFAULT_CHROME_PATHS = [
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        "/usr/bin/google-chrome",
+        "/usr/bin/chromium-browser",
+        "/usr/bin/chromium",
+    ]
+
+    def __init__(self, chrome_path: str = "", cdp_url: str = "", headless: bool = True):
+        self.chrome_path = chrome_path.strip()
+        self.cdp_url = cdp_url.strip()
+        self.headless = headless
+
+    def solve_turnstile(self, page_url: str, site_key: str) -> str:
+        try:
+            from patchright.sync_api import sync_playwright
+        except ImportError:
+            from playwright.sync_api import sync_playwright
+
+        import os, socket, subprocess, time, signal, shutil
+        from urllib.parse import urlparse
+
+        process = None
+        profile_dir = None
+        cdp_endpoint = self.cdp_url
+
+        try:
+            if not cdp_endpoint:
+                chrome_bin = self._resolve_chrome()
+                port = self._find_free_port()
+                base_dir = os.path.join(
+                    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                    "output", "cdp_turnstile_profiles",
+                )
+                self._purge_stale_profiles(base_dir)
+                profile_dir = os.path.join(base_dir, f"cdp-{port}")
+                os.makedirs(profile_dir, exist_ok=True)
+                args = [
+                    chrome_bin,
+                    f"--remote-debugging-port={port}",
+                    f"--user-data-dir={profile_dir}",
+                    "--no-first-run",
+                    "--no-default-browser-check",
+                    "--disable-background-networking",
+                    "--disable-sync",
+                    "--window-position=-32000,-32000",
+                    "--window-size=1280,800",
+                ]
+                if self.headless:
+                    args.append("--headless=new")
+                creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                process = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=creationflags)
+                cdp_endpoint = f"http://127.0.0.1:{port}"
+                self._wait_cdp_ready(port)
+
+            with sync_playwright() as pw:
+                browser = pw.chromium.connect_over_cdp(cdp_endpoint, timeout=15000)
+                ctx = browser.contexts[0] if browser.contexts else browser.new_context()
+                page = ctx.new_page()
+                try:
+                    is_clerk = "venice.ai" in page_url.lower() or "clerk" in page_url.lower()
+                    if is_clerk:
+                        token = self._solve_clerk_turnstile(page, page_url, site_key)
+                    else:
+                        page.goto(page_url, wait_until="domcontentloaded", timeout=30000)
+                        token = self._click_until_token(page, site_key)
+                    if not token:
+                        raise RuntimeError("CDP Turnstile: failed to obtain token after retries")
+                    return token
+                finally:
+                    page.close()
+                    browser.close()
+        finally:
+            if process is not None:
+                self._kill_process(process)
+            if profile_dir:
+                import threading
+                threading.Thread(target=self._cleanup_dir, args=(profile_dir,), daemon=True).start()
+
+    def solve_turnstile_with_session(self, page_url: str, site_key: str) -> dict:
+        """获取 Turnstile token，并同步 CDP 浏览器里的同域 Cookie 与 UA。"""
+        try:
+            from patchright.sync_api import sync_playwright
+        except ImportError:
+            from playwright.sync_api import sync_playwright
+
+        import os, subprocess, time
+        from urllib.parse import urlparse
+
+        process = None
+        profile_dir = None
+        cdp_endpoint = self.cdp_url
+        try:
+            if not cdp_endpoint:
+                chrome_bin = self._resolve_chrome()
+                port = self._find_free_port()
+                base_dir = os.path.join(
+                    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                    "output", "cdp_turnstile_profiles",
+                )
+                self._purge_stale_profiles(base_dir)
+                profile_dir = os.path.join(base_dir, f"cdp-{port}")
+                os.makedirs(profile_dir, exist_ok=True)
+                args = [
+                    chrome_bin,
+                    f"--remote-debugging-port={port}",
+                    f"--user-data-dir={profile_dir}",
+                    "--no-first-run",
+                    "--no-default-browser-check",
+                    "--disable-background-networking",
+                    "--disable-sync",
+                    "--window-position=-32000,-32000",
+                    "--window-size=1280,800",
+                ]
+                if self.headless:
+                    args.append("--headless=new")
+                creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                process = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=creationflags)
+                cdp_endpoint = f"http://127.0.0.1:{port}"
+                self._wait_cdp_ready(port)
+
+            with sync_playwright() as pw:
+                browser = pw.chromium.connect_over_cdp(cdp_endpoint, timeout=15000)
+                ctx = browser.contexts[0] if browser.contexts else browser.new_context()
+                page = ctx.new_page()
+                try:
+                    is_clerk = "venice.ai" in page_url.lower() or "clerk" in page_url.lower()
+                    if is_clerk:
+                        token = self._solve_clerk_turnstile(page, page_url, site_key)
+                    else:
+                        page.goto(page_url, wait_until="domcontentloaded", timeout=30000)
+                        token = self._click_until_token(page, site_key)
+                    if not token:
+                        raise RuntimeError("CDP Turnstile: failed to obtain token after retries")
+                    cookies = self._cookie_dict_for_url(ctx, page_url)
+                    try:
+                        user_agent = str(page.evaluate("() => navigator.userAgent") or "").strip()
+                    except Exception:
+                        user_agent = ""
+                    return {
+                        "token": token,
+                        "turnstile_token": token,
+                        "cookies": cookies,
+                        "user_agent": user_agent,
+                        "mode": "cdp_protocol",
+                    }
+                finally:
+                    page.close()
+                    browser.close()
+        finally:
+            if process is not None:
+                self._kill_process(process)
+            if profile_dir:
+                import threading
+                threading.Thread(target=self._cleanup_dir, args=(profile_dir,), daemon=True).start()
+
+    @staticmethod
+    def _cookie_dict_for_url(context, page_url: str) -> dict[str, str]:
+        from urllib.parse import urlparse
+
+        host = str(urlparse(page_url).hostname or "").lower()
+        cookies: dict[str, str] = {}
+        try:
+            for cookie in context.cookies():
+                name = str(cookie.get("name") or "")
+                value = str(cookie.get("value") or "")
+                domain = str(cookie.get("domain") or "").lstrip(".").lower()
+                if not name or value is None:
+                    continue
+                if host and domain and not (host == domain or host.endswith(f".{domain}") or domain.endswith(f".{host}")):
+                    continue
+                cookies[name] = value
+        except Exception:
+            return cookies
+        return cookies
+
+    def _solve_clerk_turnstile(self, page, page_url: str, site_key: str) -> str:
+        import logging
+        log = logging.getLogger("cdp_turnstile")
+
+        log.info("Clerk Turnstile: direct widget render with sitekey=%s", site_key)
+        page.goto(page_url, wait_until="domcontentloaded", timeout=30000)
+
+        page.wait_for_timeout(2000)
+
+        token = page.evaluate("""
+            (siteKey) => new Promise((resolve) => {
+                const existing = document.querySelector('script[src*="challenges.cloudflare.com/turnstile"]');
+                function renderWidget() {
+                    if (typeof window.turnstile === 'undefined') {
+                        setTimeout(renderWidget, 500);
+                        return;
+                    }
+                    let container = document.getElementById('cdp-turnstile-container');
+                    if (!container) {
+                        container = document.createElement('div');
+                        container.id = 'cdp-turnstile-container';
+                        document.body.appendChild(container);
+                    }
+                    window.turnstile.render(container, {
+                        sitekey: siteKey,
+                        callback: (token) => resolve(token),
+                        'error-callback': () => resolve(''),
+                        'timeout-callback': () => resolve(''),
+                    });
+                }
+                if (!existing) {
+                    const script = document.createElement('script');
+                    script.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
+                    script.onload = () => renderWidget();
+                    script.onerror = () => resolve('');
+                    document.head.appendChild(script);
+                } else {
+                    renderWidget();
+                }
+                setTimeout(() => resolve(''), 45000);
+            })
+        """, site_key)
+
+        token = str(token or "").strip()
+        if token:
+            log.info("Clerk Turnstile token obtained (%d chars) via direct render", len(token))
+        else:
+            log.warning("Clerk Turnstile direct render: no token after 45s, falling back to intercept method")
+            token = self._solve_clerk_turnstile_intercept(page, page_url, site_key)
+        return token
+
+    def _solve_clerk_turnstile_intercept(self, page, page_url: str, site_key: str) -> str:
+        import logging, uuid
+        from urllib.parse import parse_qs
+        log = logging.getLogger("cdp_turnstile")
+
+        captured = {"token": ""}
+
+        def _intercept(route):
+            req = route.request
+            if "sign_ups" in req.url and req.method == "POST":
+                body = req.post_data or ""
+                params = parse_qs(body)
+                t = params.get("captcha_token", [""])[0]
+                if t:
+                    captured["token"] = t
+            route.continue_()
+
+        page.route("**/v1/client/sign_ups**", _intercept)
+
+        page.goto(page_url, wait_until="domcontentloaded", timeout=30000)
+
+        try:
+            page.wait_for_selector('input[type="email"], input[name="email"]', timeout=20000)
+        except Exception:
+            return ""
+
+        dummy_email = f"ts{uuid.uuid4().hex[:10]}@proton.me"
+        dummy_pass = f"Ts{uuid.uuid4().hex[:12]}!1"
+
+        try:
+            page.locator('input[type="email"], input[name="email"]').first.fill(dummy_email)
+            page.locator('button:has-text("Sign up")').first.click()
+        except Exception:
+            return ""
+        page.wait_for_timeout(2000)
+
+        try:
+            page.wait_for_selector('input[type="password"]', timeout=10000)
+            page.locator('input[type="password"]').first.fill(dummy_pass)
+        except Exception:
+            pass
+
+        page.wait_for_timeout(500)
+
+        try:
+            page.locator('button:has-text("Sign up")').first.click()
+        except Exception:
+            return ""
+
+        for i in range(15):
+            page.wait_for_timeout(2000)
+            if captured["token"]:
+                log.info("Intercept token captured (%d chars) after %ds", len(captured["token"]), (i+1)*2)
+                return captured["token"]
+
+        return ""
+
+    def _click_until_token(self, page, site_key: str, retries: int = 6, wait_ms: int = 4000) -> str:
+        page.wait_for_timeout(2000)
+        for attempt in range(1, retries + 1):
+            token = self._read_token(page)
+            if token:
+                return token
+            frame = self._find_turnstile_frame(page, site_key)
+            if frame:
+                try:
+                    checkbox = frame.locator("input[type='checkbox']")
+                    if checkbox.count() > 0:
+                        checkbox.first.click(timeout=3000)
+                    else:
+                        box = frame.locator("body").bounding_box()
+                        if box:
+                            page.mouse.click(box["x"] + 28, box["y"] + 22, delay=100)
+                except Exception:
+                    pass
+            else:
+                widget = page.locator(f"[data-sitekey='{site_key}'], .cf-turnstile, #cf-turnstile")
+                if widget.count() > 0:
+                    box = widget.first.bounding_box()
+                    if box:
+                        page.mouse.move(box["x"] + 20, box["y"] + 18, steps=8)
+                        page.wait_for_timeout(100)
+                        page.mouse.click(box["x"] + 28, box["y"] + 22, delay=100)
+            page.wait_for_timeout(wait_ms)
+            token = self._read_token(page)
+            if token:
+                return token
+        return ""
+
+    def _find_turnstile_frame(self, page, site_key: str):
+        for frame in page.frames:
+            url = frame.url or ""
+            if "challenges.cloudflare.com" in url or "turnstile" in url:
+                return frame
+        return None
+
+    @staticmethod
+    def _read_token(page) -> str:
+        return str(page.evaluate("""() => {
+            const f = document.querySelector(
+                "input[name='cf-turnstile-response'], textarea[name='cf-turnstile-response'], "
+                + "input[name='captcha'], textarea[name='captcha']"
+            );
+            return f ? (f.value || "") : "";
+        }""") or "")
+
+    def _resolve_chrome(self) -> str:
+        import pathlib
+        if self.chrome_path:
+            if pathlib.Path(self.chrome_path).exists():
+                return self.chrome_path
+            raise RuntimeError(f"CDP Turnstile: chrome_path not found: {self.chrome_path}")
+        for candidate in self.DEFAULT_CHROME_PATHS:
+            if pathlib.Path(candidate).exists():
+                return candidate
+        raise RuntimeError("CDP Turnstile: Chrome/Chromium not found, set chrome_path in settings")
+
+    @staticmethod
+    def _find_free_port() -> int:
+        import socket
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("127.0.0.1", 0))
+            s.listen(1)
+            return int(s.getsockname()[1])
+
+    @staticmethod
+    def _wait_cdp_ready(port: int, timeout: int = 20) -> None:
+        import time, requests as _req
+        deadline = time.time() + timeout
+        url = f"http://127.0.0.1:{port}/json/version"
+        while time.time() < deadline:
+            try:
+                if _req.get(url, timeout=1.5).ok:
+                    return
+            except Exception:
+                pass
+            time.sleep(0.5)
+        raise RuntimeError(f"CDP Turnstile: Chrome not ready on port {port}")
+
+    @staticmethod
+    def _kill_process(process) -> None:
+        import os, subprocess, signal
+        try:
+            if process.poll() is not None:
+                return
+            if os.name == "nt":
+                subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10, check=False)
+            else:
+                os.kill(process.pid, signal.SIGKILL)
+        except Exception:
+            try:
+                process.kill()
+            except Exception:
+                pass
+
+    @staticmethod
+    def _purge_stale_profiles(base_dir: str, max_age_sec: int = 300) -> None:
+        import os, time, shutil
+        if not os.path.isdir(base_dir):
+            return
+        now = time.time()
+        try:
+            for name in os.listdir(base_dir):
+                d = os.path.join(base_dir, name)
+                if not os.path.isdir(d) or not name.startswith("cdp-"):
+                    continue
+                try:
+                    if now - os.path.getmtime(d) > max_age_sec:
+                        shutil.rmtree(d, ignore_errors=True)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    @staticmethod
+    def _cleanup_dir(path: str) -> None:
+        import os, time, shutil, subprocess as _sp
+        for delay in [1, 2, 5, 10, 30]:
+            time.sleep(delay)
+            try:
+                shutil.rmtree(path, ignore_errors=True)
+                if not os.path.exists(path):
+                    return
+            except Exception:
+                pass
+        if os.name == "nt" and os.path.exists(path):
+            try:
+                _sp.run(["cmd", "/c", "rmdir", "/s", "/q", path],
+                        stdout=_sp.DEVNULL, stderr=_sp.DEVNULL, timeout=10, check=False)
+            except Exception:
+                pass
+
+    def solve_image(self, image_b64: str) -> str:
+        raise NotImplementedError
+
+
+class PatchrightHarvester(BaseCaptcha):
+    """Lightweight local Turnstile solver using patchright headless Chromium.
+
+    Renders the Turnstile widget on a minimal stub page — no real site loaded,
+    minimal memory, no third-party captcha service needed.
+    """
+
+    _STEALTH_INIT = """
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    window.chrome = { runtime: {}, loadTimes: function(){}, csi: function(){} };
+    Object.defineProperty(navigator, 'plugins', { get: () => [1,2,3,4,5] });
+    Object.defineProperty(navigator, 'languages', { get: () => ['en-US','en'] });
+    const _origQuery = window.navigator.permissions.query;
+    window.navigator.permissions.query = (params) =>
+        params.name === 'notifications'
+            ? Promise.resolve({ state: Notification.permission })
+            : _origQuery.call(window.navigator.permissions, params);
+    """
+
+    _LAUNCH_ARGS = [
+        "--disable-blink-features=AutomationControlled",
+        "--disable-dev-shm-usage",
+        "--disable-background-networking",
+        "--disable-default-apps",
+        "--disable-extensions",
+        "--disable-sync",
+        "--disable-translate",
+        "--disable-hang-monitor",
+        "--disable-domain-reliability",
+        "--disable-renderer-backgrounding",
+        "--disable-background-timer-throttling",
+        "--disable-backgrounding-occluded-windows",
+        "--disable-ipc-flooding-protection",
+        "--disable-component-update",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--no-sandbox",
+        "--metrics-recording-only",
+        "--mute-audio",
+        "--window-position=-32000,-32000",
+        "--window-size=800,600",
+    ]
+
+    def __init__(self, *, headless: bool = False, max_contexts: int = 3, proxy: str = ""):
+        self._headless = False
+        self._max_contexts = max(1, max_contexts)
+        self._proxy = proxy.strip()
+        self._pw = None
+        self._browser = None
+        self._engine = "patchright"
+
+    def _ensure_browser(self):
+        if self._browser and self._browser.is_connected():
+            return
+        try:
+            from patchright.sync_api import sync_playwright
+            self._engine = "patchright"
+        except ImportError:
+            raise RuntimeError(
+                "PatchrightHarvester requires patchright (CDP-patched Chromium). "
+                "Install: pip install patchright && python -m patchright install chromium"
+            )
+
+        if self._pw is None:
+            self._pw = sync_playwright().start()
+        launch_opts = {
+            "headless": self._headless,
+            "args": self._LAUNCH_ARGS,
+        }
+        if self._proxy:
+            from urllib.parse import urlparse
+            parsed = urlparse(self._proxy)
+            proxy_cfg = {"server": f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"}
+            if parsed.username:
+                proxy_cfg["username"] = parsed.username
+            if parsed.password:
+                proxy_cfg["password"] = parsed.password
+            launch_opts["proxy"] = proxy_cfg
+        self._browser = self._pw.chromium.launch(**launch_opts)
+
+    def solve_turnstile(self, page_url: str, site_key: str) -> str:
+        """Harvest Turnstile token by driving Clerk's own sign-up flow.
+
+        Navigate to the sign-up page, fill dummy email+password, click submit,
+        and intercept the captcha_token from Clerk's sign_ups POST. Clerk's JS
+        triggers invisible Turnstile automatically in smart mode.
+        """
+        import logging, time, uuid
+        from urllib.parse import parse_qs
+        log = logging.getLogger("patchright_harvester")
+        self._ensure_browser()
+
+        ctx = self._browser.new_context(
+            viewport={"width": 1280, "height": 800},
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/147.0.0.0 Safari/537.36"
+            ),
+        )
+        page = ctx.new_page()
+        page.add_init_script(self._STEALTH_INIT)
+
+        captured = {"token": ""}
+
+        def _intercept(route):
+            req = route.request
+            if "sign_ups" in req.url and req.method == "POST":
+                body = req.post_data or ""
+                params = parse_qs(body)
+                t = params.get("captcha_token", [""])[0]
+                if t:
+                    captured["token"] = t
+                    route.abort()
+                    return
+            route.continue_()
+
+        page.route("**/v1/client/sign_ups**", _intercept)
+
+        try:
+            t0 = time.time()
+            page.goto(page_url, wait_until="domcontentloaded", timeout=30000)
+
+            page.wait_for_selector('input[type="email"], input[name="email"]', timeout=20000)
+
+            dummy_email = f"ph{uuid.uuid4().hex[:10]}@proton.me"
+            dummy_pass = f"Ph{uuid.uuid4().hex[:12]}!1"
+
+            page.locator('input[type="email"], input[name="email"]').first.fill(dummy_email)
+            page.locator('button:has-text("Sign up")').first.click()
+            page.wait_for_timeout(2000)
+
+            try:
+                page.wait_for_selector('input[type="password"]', timeout=10000)
+                page.locator('input[type="password"]').first.fill(dummy_pass)
+            except Exception:
+                pass
+
+            page.wait_for_timeout(500)
+            page.locator('button:has-text("Sign up")').first.click()
+
+            turnstile_clicked = False
+            submit_after_turnstile = False
+            for i in range(40):
+                if captured["token"]:
+                    elapsed = round(time.time() - t0, 2)
+                    log.warning("PatchrightHarvester: token (%d chars) in %.1fs", len(captured["token"]), elapsed)
+                    return captured["token"]
+                if not turnstile_clicked:
+                    try:
+                        cf_frames = [f for f in page.frames if "challenges.cloudflare.com" in f.url]
+                        for frame in cf_frames:
+                            log.warning("PatchrightHarvester: found CF frame: %s", frame.url[:120])
+                            try:
+                                body = frame.locator("body")
+                                body.click(timeout=3000, position={"x": 24, "y": 24})
+                                turnstile_clicked = True
+                                log.warning("PatchrightHarvester: clicked Turnstile body")
+                                break
+                            except Exception as click_exc:
+                                log.warning("PatchrightHarvester: body click failed: %s", str(click_exc)[:200])
+                    except Exception as exc:
+                        log.warning("PatchrightHarvester: frame scan failed: %s", str(exc)[:200])
+                elif not submit_after_turnstile:
+                    try:
+                        btn = page.locator('button:has-text("Sign up")').first
+                        if btn.is_visible(timeout=500):
+                            btn.click(timeout=3000)
+                            submit_after_turnstile = True
+                            log.warning("PatchrightHarvester: re-clicked Sign up after Turnstile")
+                    except Exception:
+                        pass
+                page.wait_for_timeout(2000)
+
+            elapsed = round(time.time() - t0, 2)
+            raise RuntimeError(f"PatchrightHarvester: no captcha_token intercepted after {elapsed}s")
+        finally:
+            page.close()
+            ctx.close()
+
+    def solve_image(self, image_b64: str) -> str:
+        raise NotImplementedError
+
+    def close(self):
+        if self._browser:
+            try:
+                self._browser.close()
+            except Exception:
+                pass
+        if self._pw:
+            try:
+                self._pw.stop()
+            except Exception:
+                pass
+        self._browser = None
+        self._pw = None
+
+
 def _definition_auth_fields(definition) -> list[str]:
     if not definition:
         return []
@@ -189,7 +813,7 @@ def has_captcha_configured(provider_key: str, extra: dict | None = None) -> bool
     from infrastructure.provider_settings_repository import ProviderSettingsRepository
 
     key = str(provider_key or "").strip()
-    if key in {"manual", "local_solver"}:
+    if key in {"manual", "local_solver", "cdp_turnstile", "patchright_harvester"}:
         return True
 
     definition = ProviderDefinitionsRepository().get_by_key("captcha", key)
@@ -217,11 +841,24 @@ def create_captcha_solver(provider_key: str, extra: dict | None = None) -> BaseC
 
     if driver_type == "local_solver":
         return LocalSolverCaptcha(merged.get("solver_url", "") or "http://localhost:8889")
+    if driver_type == "cdp_turnstile":
+        return CdpTurnstileSolver(
+            chrome_path=str(merged.get("chrome_path", "") or ""),
+            cdp_url=str(merged.get("chrome_cdp_url", "") or ""),
+            headless=str(merged.get("cdp_headless", "false") or "false").strip().lower() in {"1", "true", "yes"},
+        )
+    if driver_type == "patchright_harvester":
+        return PatchrightHarvester(
+            headless=str(merged.get("harvester_headless", "false") or "false").strip().lower() in {"1", "true", "yes"},
+            max_contexts=int(merged.get("harvester_max_contexts", 3) or 3),
+            proxy=str(merged.get("harvester_proxy", "") or ""),
+        )
     if driver_type == "yescaptcha_api":
         client_key = str(merged.get("yescaptcha_key", "") or "")
         if not client_key:
-            raise RuntimeError("YesCaptcha Key 未配置，无法继续协议注册")
-        return YesCaptcha(client_key)
+            raise RuntimeError("YesCaptcha / 兼容 API Client Key 未配置，无法继续协议注册")
+        api_base = str(merged.get("yescaptcha_api_url", "") or "https://api.yescaptcha.com")
+        return YesCaptcha(client_key, api_base)
     if driver_type == "twocaptcha_api":
         api_key = str(merged.get("twocaptcha_key", "") or "")
         if not api_key:

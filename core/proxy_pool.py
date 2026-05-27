@@ -2,6 +2,7 @@
 from typing import Optional
 from sqlmodel import Session, select
 from .db import ProxyModel, engine
+from .proxy_utils import normalize_proxy_url
 import time, threading, random
 from datetime import datetime, timezone
 
@@ -11,13 +12,17 @@ class ProxyPool:
         self._index = 0
         self._lock = threading.Lock()
 
-    def get_next(self, region: str = "") -> Optional[str]:
+    def get_next(self, region: str = "", exclude_urls: set[str] | None = None) -> Optional[str]:
         """加权轮询取一个可用代理，在高成功率代理间轮换"""
         with Session(engine) as s:
             q = select(ProxyModel).where(ProxyModel.is_active == True)
             if region:
                 q = q.where(ProxyModel.region == region)
             proxies = s.exec(q).all()
+            if exclude_urls:
+                excluded = {str(url).strip() for url in exclude_urls if str(url).strip()}
+                if excluded:
+                    proxies = [proxy for proxy in proxies if str(proxy.url).strip() not in excluded]
             if not proxies:
                 return None
             proxies.sort(
@@ -58,8 +63,9 @@ class ProxyPool:
         results = {"ok": 0, "fail": 0}
         for p in proxies:
             try:
+                proxy_url = normalize_proxy_url(p.url)
                 r = requests.get("https://httpbin.org/ip",
-                                 proxies={"http": p.url, "https": p.url},
+                                 proxies={"http": proxy_url, "https": proxy_url},
                                  timeout=8)
                 if r.status_code == 200:
                     self.report_success(p.url)

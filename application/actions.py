@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from domain.actions import ActionExecutionCommand
-from application.tasks import create_platform_action_task
+from application.tasks import create_batch_action_task, create_platform_action_task
 from services.task_runtime import task_runtime
 from infrastructure.platform_runtime import PlatformRuntime
 
@@ -38,6 +38,24 @@ class ActionsService:
                 "account_id": command.account_id,
                 "action_id": command.action_id,
                 "params": command.params,
+            }
+        )
+        task_runtime.wake_up()
+        return task
+
+    def execute_batch_action(
+        self,
+        platform: str,
+        action_id: str,
+        account_ids: list[int],
+        params: dict | None = None,
+    ) -> dict:
+        task = create_batch_action_task(
+            {
+                "platform": platform,
+                "action_id": action_id,
+                "account_ids": account_ids,
+                "params": params or {},
             }
         )
         task_runtime.wake_up()

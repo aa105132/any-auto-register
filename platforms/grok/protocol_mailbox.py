@@ -13,9 +13,20 @@ class GrokProtocolMailboxWorker:
         captcha_solver=None,
         proxy: str | None = None,
         log_fn: Callable[[str], None] = print,
+        use_cdp_bridge: bool = False,
+        chrome_cdp_url: str = "",
+        chrome_user_data_dir: str = "",
     ):
-        self.client = GrokRegister(captcha_solver=captcha_solver, proxy=proxy, log_fn=log_fn)
+        self.client = GrokRegister(
+            captcha_solver=captcha_solver,
+            proxy=proxy,
+            log_fn=log_fn,
+            use_cdp_bridge=use_cdp_bridge,
+            chrome_cdp_url=chrome_cdp_url,
+            chrome_user_data_dir=chrome_user_data_dir,
+        )
         self.log = log_fn
+        self.use_cdp_bridge = bool(use_cdp_bridge)
 
     def run(
         self,
@@ -33,14 +44,15 @@ class GrokProtocolMailboxWorker:
         if not code:
             raise RuntimeError("未获取到验证码")
 
-        self.client.step2_verify_otp(email, code)
+        if not self.client.step2_verify_otp(email, code):
+            raise RuntimeError("Grok 邮箱验证码校验失败")
         signup_body = self.client.step3_signup(email, use_password, code, given_name, family_name)
         self.client.step4_set_cookies(signup_body)
 
-        cookies = {cookie.name: cookie.value for cookie in self.client.s.cookies}
+        cookies = self.client.cookies
         sso = cookies.get("sso", "")
         if sso:
-            self.log(f"  ✅ sso={sso[:40]}...")
+            self.log(f"  [OK] sso={sso[:40]}...")
         else:
             self.log("  ⚠️ 未获取到 sso cookie")
 
@@ -51,4 +63,7 @@ class GrokProtocolMailboxWorker:
             "family_name": family_name,
             "sso": sso,
             "sso_rw": cookies.get("sso-rw", ""),
+            "cookies": cookies,
+            "cookie_header": self.client.cookie_header,
+            "cdp_bootstrap": self.client.cdp_bootstrap_result,
         }

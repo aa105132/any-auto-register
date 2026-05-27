@@ -10,7 +10,22 @@ def _utcnow():
     return datetime.now(timezone.utc)
 
 DATABASE_URL = "sqlite:///account_manager.db"
-engine = create_engine(DATABASE_URL)
+engine = create_engine(
+    DATABASE_URL,
+    connect_args={"check_same_thread": False, "timeout": 30},
+    pool_size=5,
+    max_overflow=10,
+    pool_pre_ping=True,
+)
+
+from sqlalchemy import event as _sa_event
+
+@_sa_event.listens_for(engine, "connect")
+def _set_sqlite_pragma(dbapi_connection, connection_record):
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA busy_timeout=30000")
+    cursor.close()
 
 
 class AccountModel(SQLModel, table=True):
@@ -189,6 +204,32 @@ class ProviderSettingModel(SQLModel, table=True):
 
     def set_auth(self, data: dict):
         self.auth_json = json.dumps(data or {}, ensure_ascii=False)
+
+    def get_metadata(self) -> dict:
+        return json.loads(self.metadata_json or "{}")
+
+    def set_metadata(self, data: dict):
+        self.metadata_json = json.dumps(data or {}, ensure_ascii=False)
+
+
+class MailboxInventoryModel(SQLModel, table=True):
+    __tablename__ = "mailbox_inventory"
+    __table_args__ = (
+        UniqueConstraint("provider_key", "email", name="uq_mailbox_inventory_provider_email"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    provider_key: str = Field(index=True)
+    email: str = Field(index=True)
+    purchase_token: str = ""
+    status: str = Field(default="unused", index=True)
+    note: str = ""
+    last_error: str = ""
+    last_task_id: str = Field(default="", index=True)
+    last_platform: str = Field(default="", index=True)
+    metadata_json: str = "{}"
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
 
     def get_metadata(self) -> dict:
         return json.loads(self.metadata_json or "{}")
@@ -419,16 +460,16 @@ def _migrate_legacy_accounts_schema() -> None:
 
 def init_db():
     SQLModel.metadata.create_all(engine)
-    from core.account_graph import sync_all_account_graphs
     from infrastructure.provider_definitions_repository import ProviderDefinitionsRepository
 
     _migrate_legacy_accounts_schema()
     SQLModel.metadata.create_all(engine)
 
-    with Session(engine) as session:
-        ProviderDefinitionsRepository().ensure_seeded()
-        sync_all_account_graphs(session)
-        session.commit()
+    ProviderDefinitionsRepository().ensure_seeded()
+
+    # 同步 account graph 改为懒加载：只在首次查询某账号时触发
+    # 见 AccountsRepository._load_records 中已有 missing 补同步逻辑
+    # 不再在启动时全量遍历
 
 
 def get_session():

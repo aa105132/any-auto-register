@@ -150,7 +150,7 @@ def _click_turnstile_in_iframe(page, log_fn=print) -> bool:
                 page.mouse.down()
                 time.sleep(random.uniform(0.08, 0.15))
                 page.mouse.up()
-                log_fn(f"✅ 点击 Turnstile checkbox 坐标: ({cx:.0f}, {cy:.0f})")
+                log_fn(f"[OK] 点击 Turnstile checkbox 坐标: ({cx:.0f}, {cy:.0f})")
                 time.sleep(1.5)
                 if _is_turnstile_modal_visible(page):
                     page.mouse.move(cx + 12, cy)
@@ -165,7 +165,7 @@ def _click_turnstile_in_iframe(page, log_fn=print) -> bool:
 
     try:
         cf_frame.locator("body").click(position={"x": 24, "y": 32}, timeout=5000)
-        log_fn("✅ frame 内坐标点击成功")
+        log_fn("[OK] frame 内坐标点击成功")
         return True
     except Exception as exc:
         log_fn(f"frame 内点击失败: {exc}")

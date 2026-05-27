@@ -174,7 +174,294 @@ def load_result_context(result_path: Path) -> ZoProxyDeployContext:
     )
 
 
-def patch_zo_chat_route(source: str, persona_id: str) -> str:
+
+def _ts_string(value: str) -> str:
+    return json.dumps(str(value or ""), ensure_ascii=False)
+
+
+def _build_direct_ask_chat_route(
+    *,
+    access_token: str,
+    workspace_origin: str,
+    workspace_handle: str,
+    expected_path_token: str = "",
+) -> str:
+    """生成当前 Zo /ask 协议的 OpenAI 兼容路由。"""
+    if not access_token:
+        raise RuntimeError("缺少 access_token，不能生成 direct /ask 代理路由")
+    if not workspace_origin:
+        raise RuntimeError("缺少 workspace_origin，不能生成 direct /ask 代理路由")
+    template = """
+import type { Context } from "hono";
+
+const EMBEDDED_ACCESS_TOKEN = __ACCESS_TOKEN__;
+const WORKSPACE_ORIGIN = __WORKSPACE_ORIGIN__;
+const WORKSPACE_HANDLE = __WORKSPACE_HANDLE__;
+const EXPECTED_PATH_TOKEN = __EXPECTED_PATH_TOKEN__;
+
+type ChatMessage = {
+  role: "system" | "user" | "assistant" | "tool";
+  content: string | Array<{ type: string; text?: string }>;
+};
+
+type ChatRequest = {
+  model?: string;
+  messages: ChatMessage[];
+  stream?: boolean;
+  max_tokens?: number;
+  max_completion_tokens?: number;
+  conversation_id?: string;
+};
+
+function extractText(content: ChatMessage["content"]): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((part) => {
+      if (typeof part === "string") return part;
+      if (part && typeof part === "object" && (part as any).type === "text") {
+        return typeof (part as any).text === "string" ? (part as any).text : "";
+      }
+      return "";
+    })
+    .filter(Boolean)
+    .join("\\n");
+}
+
+function messagesToPrompt(messages: ChatMessage[]): string {
+  const systemParts: string[] = [];
+  const convo: string[] = [];
+  for (const msg of messages) {
+    const text = extractText(msg.content).trim();
+    if (!text) continue;
+    if (msg.role === "system") systemParts.push(text);
+    else if (msg.role === "assistant") convo.push(`Assistant: ${text}`);
+    else if (msg.role === "tool") convo.push(`Tool result: ${text}`);
+    else convo.push(`User: ${text}`);
+  }
+  const systemBlock = systemParts.length > 0
+    ? `System instructions:\\n${systemParts.join("\\n\\n")}\\n\\n---\\n\\n`
+    : "";
+  return systemBlock + convo.join("\\n\\n");
+}
+
+function isValidZoModel(model?: string): string | undefined {
+  if (!model) return undefined;
+  if (/^[a-z0-9_-]+:[a-zA-Z0-9._\\/-]+$/.test(model)) return model;
+  return undefined;
+}
+
+function makeId() {
+  return "chatcmpl-" + Math.random().toString(36).slice(2, 12);
+}
+
+function nonStreamingResponse(modelName: string, content: string, usage: Record<string, unknown> = {}) {
+  const promptTokens = Number((usage as any).input_tokens ?? (usage as any).prompt_tokens ?? 0) || 0;
+  const completionTokens = Number((usage as any).output_tokens ?? (usage as any).completion_tokens ?? 0) || 0;
+  return {
+    id: makeId(),
+    object: "chat.completion",
+    created: Math.floor(Date.now() / 1000),
+    model: modelName,
+    choices: [{ index: 0, message: { role: "assistant", content }, finish_reason: "stop" }],
+    usage: { prompt_tokens: promptTokens, completion_tokens: completionTokens, total_tokens: promptTokens + completionTokens },
+  };
+}
+
+function streamChunk(id: string, modelName: string, delta: object, finish: string | null = null) {
+  return "data: " + JSON.stringify({
+    id,
+    object: "chat.completion.chunk",
+    created: Math.floor(Date.now() / 1000),
+    model: modelName,
+    choices: [{ index: 0, delta, finish_reason: finish }],
+  }) + "\\n\\n";
+}
+
+function parseZoEventBlock(block: string): { eventType: string; data: any } | null {
+  const lines = block.split(/\\r?\\n/);
+  let eventType = "";
+  const dataLines: string[] = [];
+  for (const line of lines) {
+    if (line.startsWith("event:")) eventType = line.slice(6).trim();
+    else if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
+  }
+  if (dataLines.length === 0) return null;
+  const raw = dataLines.join("\\n");
+  try {
+    return { eventType: eventType || "message", data: JSON.parse(raw) };
+  } catch {
+    return { eventType: eventType || "message", data: { raw } };
+  }
+}
+
+function zoEventToTextDelta(eventType: string, parsed: any): string {
+  if (eventType === "PartStartEvent") {
+    const part = parsed?.part;
+    return part?.part_kind === "text" && typeof part?.content === "string" ? part.content : "";
+  }
+  if (eventType === "PartDeltaEvent") {
+    const delta = parsed?.delta;
+    return delta?.part_delta_kind === "text" && typeof delta?.content_delta === "string" ? delta.content_delta : "";
+  }
+  return "";
+}
+
+function extractZoSseOutput(raw: string): { output: string; usage: Record<string, unknown> } {
+  let output = "";
+  let usage: Record<string, unknown> = {};
+  for (const block of raw.split(/\\r?\\n\\r?\\n/)) {
+    const evt = parseZoEventBlock(block);
+    if (!evt) continue;
+    output += zoEventToTextDelta(evt.eventType, evt.data);
+    if (evt.eventType === "FrontendModelResponse" || evt.eventType === "End") {
+      const data = evt.data?.data && typeof evt.data.data === "object" ? evt.data.data : evt.data;
+      if (typeof data?.output === "string" && data.output) output = data.output;
+      if (typeof data?.input_tokens === "number" || typeof data?.output_tokens === "number") usage = data;
+      if (data?.usage && typeof data.usage === "object") usage = data.usage;
+    }
+  }
+  return { output, usage };
+}
+
+function upstreamHeaders(wantStream: boolean): HeadersInit {
+  return {
+    Authorization: `Bearer ${EMBEDDED_ACCESS_TOKEN}`,
+    "Content-Type": "application/json",
+    Accept: wantStream ? "text/event-stream" : "text/event-stream, application/json, */*",
+    "x-zo-streaming-version": "2",
+    Origin: WORKSPACE_ORIGIN,
+    Referer: `${WORKSPACE_ORIGIN}/`,
+    "X-Zo-Workspace-Origin": WORKSPACE_ORIGIN,
+    ...(WORKSPACE_HANDLE ? { "x-zo-host-key": WORKSPACE_HANDLE } : {}),
+  };
+}
+
+export default async (c: Context) => {
+  const token = (c.req.param("token") || "").trim();
+  if (!token) return c.json({ error: { message: "Missing token in URL path", type: "auth_error" } }, 401);
+  if (EXPECTED_PATH_TOKEN && token !== EXPECTED_PATH_TOKEN) {
+    return c.json({ error: { message: "Invalid token in URL path", type: "auth_error" } }, 401);
+  }
+
+  let body: ChatRequest;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: { message: "Invalid JSON body", type: "invalid_request_error" } }, 400);
+  }
+  if (!body?.messages || !Array.isArray(body.messages) || body.messages.length === 0) {
+    return c.json({ error: { message: "`messages` is required", type: "invalid_request_error" } }, 400);
+  }
+
+  const prompt = messagesToPrompt(body.messages);
+  const requestedModel = body.model || "zo:openai/gpt-5.5";
+  const zoModel = isValidZoModel(body.model) || "zo:openai/gpt-5.5";
+  const wantStream = body.stream === true;
+  const maxTokens = typeof body.max_completion_tokens === "number"
+    ? body.max_completion_tokens
+    : typeof body.max_tokens === "number"
+      ? body.max_tokens
+      : 64_000;
+  const upstreamPayload: Record<string, unknown> = {
+    q: prompt,
+    model_name: zoModel,
+    mode: "chat",
+    context_paths: [],
+    command_paths: [],
+    expanded_paths: [],
+    max_tokens: maxTokens,
+  };
+  if (typeof body.conversation_id === "string" && body.conversation_id) {
+    upstreamPayload.conversation_id = body.conversation_id;
+  }
+
+  const upstream = await fetch("https://api.zo.computer/ask", {
+    method: "POST",
+    headers: upstreamHeaders(wantStream),
+    body: JSON.stringify(upstreamPayload),
+  });
+  if (!upstream.ok) {
+    const errText = await upstream.text().catch(() => "");
+    return c.json({ error: { message: `Zo /ask error (${upstream.status}): ${errText.slice(0, 500)}`, type: "upstream_error", code: upstream.status } }, upstream.status as 400 | 401 | 403 | 404 | 429 | 500);
+  }
+
+  if (!wantStream) {
+    const raw = await upstream.text();
+    const extracted = extractZoSseOutput(raw);
+    return c.json(nonStreamingResponse(requestedModel, extracted.output, extracted.usage));
+  }
+
+  const id = makeId();
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
+  const stream = new ReadableStream({
+    async start(controller) {
+      controller.enqueue(encoder.encode(streamChunk(id, requestedModel, { role: "assistant" })));
+      const reader = upstream.body?.getReader();
+      if (!reader) {
+        controller.enqueue(encoder.encode(streamChunk(id, requestedModel, {}, "stop")));
+        controller.enqueue(encoder.encode("data: [DONE]\\n\\n"));
+        controller.close();
+        return;
+      }
+      let buffer = "";
+      try {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const blocks = buffer.split(/\\r?\\n\\r?\\n/);
+          buffer = blocks.pop() ?? "";
+          for (const block of blocks) {
+            const evt = parseZoEventBlock(block);
+            if (!evt) continue;
+            const delta = zoEventToTextDelta(evt.eventType, evt.data);
+            if (delta) controller.enqueue(encoder.encode(streamChunk(id, requestedModel, { content: delta })));
+          }
+        }
+      } catch (err) {
+        controller.enqueue(encoder.encode(streamChunk(id, requestedModel, { content: `\\n[proxy error: ${(err as Error).message}]` }, "stop")));
+        controller.enqueue(encoder.encode("data: [DONE]\\n\\n"));
+        controller.close();
+        return;
+      }
+      controller.enqueue(encoder.encode(streamChunk(id, requestedModel, {}, "stop")));
+      controller.enqueue(encoder.encode("data: [DONE]\\n\\n"));
+      controller.close();
+    },
+  });
+  return new Response(stream, {
+    headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" },
+  });
+};
+"""
+    return (
+        template
+        .replace("__ACCESS_TOKEN__", _ts_string(access_token))
+        .replace("__WORKSPACE_ORIGIN__", _ts_string(workspace_origin.rstrip("/")))
+        .replace("__WORKSPACE_HANDLE__", _ts_string(workspace_handle))
+        .replace("__EXPECTED_PATH_TOKEN__", _ts_string(expected_path_token))
+    )
+
+
+def patch_zo_chat_route(
+    source: str,
+    persona_id: str,
+    *,
+    access_token: str = "",
+    workspace_origin: str = "",
+    workspace_handle: str = "",
+    expected_path_token: str = "",
+) -> str:
+    if access_token:
+        return _build_direct_ask_chat_route(
+            access_token=access_token,
+            workspace_origin=workspace_origin,
+            workspace_handle=workspace_handle,
+            expected_path_token=expected_path_token,
+        )
+
     if not persona_id:
         raise RuntimeError("persona_id 为空")
     patched = source.replace("PERSONA_ID_PLACEHOLDER", persona_id)
@@ -199,7 +486,15 @@ def patch_zo_chat_route(source: str, persona_id: str) -> str:
     return patched
 
 
-def build_route_subset(source_dir: Path, persona_id: str) -> list[dict[str, Any]]:
+def build_route_subset(
+    source_dir: Path,
+    persona_id: str,
+    *,
+    access_token: str = "",
+    workspace_origin: str = "",
+    workspace_handle: str = "",
+    expected_path_token: str = "",
+) -> list[dict[str, Any]]:
     source_dir = Path(source_dir)
     routes_dir = source_dir / "routes"
     route_specs = [
@@ -212,7 +507,14 @@ def build_route_subset(source_dir: Path, persona_id: str) -> list[dict[str, Any]
     for path, file_path, needs_persona in route_specs:
         code = file_path.read_text(encoding="utf-8")
         if needs_persona:
-            code = patch_zo_chat_route(code, persona_id)
+            code = patch_zo_chat_route(
+                code,
+                persona_id,
+                access_token=access_token,
+                workspace_origin=workspace_origin,
+                workspace_handle=workspace_handle,
+                expected_path_token=expected_path_token,
+            )
         subset.append({"path": path, "type": "api", "public": True, "code": code})
     return subset
 
@@ -340,6 +642,64 @@ def create_or_update_persona(
     return {"ok": True, "persona_id": persona_id, "source": "create", "data": data2, "attempts": attempts}
 
 
+def _mcp_headers(ctx: ZoProxyDeployContext) -> dict[str, str]:
+    if not ctx.api_key:
+        raise RuntimeError("缺少 Zo API key，不能通过 /mcp 写入 Space route")
+    return {
+        "Authorization": f"Bearer {ctx.api_key}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "User-Agent": "Mozilla/5.0 ZoProxyMCPDeploy/1.0",
+    }
+
+
+def _request_mcp_tool(
+    session: requests.Session,
+    ctx: ZoProxyDeployContext,
+    tool_name: str,
+    arguments: dict[str, Any],
+    *,
+    call_id: int,
+    timeout: float,
+) -> tuple[requests.Response, Any]:
+    payload = {
+        "jsonrpc": "2.0",
+        "id": call_id,
+        "method": "tools/call",
+        "params": {"name": tool_name, "arguments": arguments},
+    }
+    post = getattr(session, "post", None)
+    if callable(post):
+        response = post(f"{API_BASE}/mcp", headers=_mcp_headers(ctx), json=payload, timeout=timeout)
+    else:
+        response = session.request("POST", f"{API_BASE}/mcp", headers=_mcp_headers(ctx), json=payload, timeout=timeout)
+    try:
+        data = response.json()
+    except Exception:
+        data = {"raw": response.text[:4000]}
+    return response, data
+
+
+def _mcp_result_text(data: Any) -> str:
+    if not isinstance(data, dict):
+        return str(data)[:1000]
+    result = data.get("result") if isinstance(data.get("result"), dict) else {}
+    content = result.get("content") if isinstance(result, dict) else []
+    if isinstance(content, list) and content:
+        first = content[0] if isinstance(content[0], dict) else {}
+        return str(first.get("text") or first)[:1000]
+    return str(data)[:1000]
+
+
+def _mcp_result_is_error(data: Any) -> bool:
+    if not isinstance(data, dict):
+        return True
+    if data.get("error"):
+        return True
+    result = data.get("result") if isinstance(data.get("result"), dict) else {}
+    return bool(result.get("isError")) if isinstance(result, dict) else True
+
+
 def sync_routes(
     ctx: ZoProxyDeployContext,
     routes: list[dict[str, Any]],
@@ -347,6 +707,38 @@ def sync_routes(
     session: requests.Session,
     timeout: float = 180.0,
 ) -> dict[str, Any]:
+    """通过 Zo MCP 纯 API 写入 Space routes，失败时再保留 /exec 兼容路径。"""
+    if ctx.api_key:
+        results: list[dict[str, Any]] = []
+        for index, route in enumerate(routes, 1):
+            path = str(route.get("path") or "")
+            arguments = {
+                "path": path,
+                "route_type": str(route.get("route_type") or route.get("type") or "api"),
+                "code": str(route.get("code") or ""),
+                "public": "true" if route.get("public") is True or str(route.get("public")).lower() == "true" else "false",
+            }
+            response, data = _request_mcp_tool(
+                session,
+                ctx,
+                "write_space_route",
+                arguments,
+                call_id=index,
+                timeout=timeout,
+            )
+            item = {
+                "path": path,
+                "status": response.status_code,
+                "ok": bool(response.ok and not _mcp_result_is_error(data)),
+                "text": _mcp_result_text(data),
+            }
+            results.append(item)
+            if not item["ok"]:
+                raise RuntimeError(
+                    f"MCP write_space_route 失败: path={path} status={response.status_code} body={str(data)[:1200]}"
+                )
+        return {"ok": True, "status": 200, "method": "mcp_write_space_route", "routes": results}
+
     subset_json = json.dumps(routes, ensure_ascii=False, separators=(",", ":"))
     encoded = base64.b64encode(subset_json.encode("utf-8")).decode("ascii")
     remote_id = uuid.uuid4().hex
@@ -375,7 +767,7 @@ def sync_routes(
     stderr = str(data.get("stderr") or "") if isinstance(data, dict) else ""
     if returncode not in (0, None):
         raise RuntimeError(f"space-sync 失败: returncode={returncode} stderr={stderr[:1200]} stdout={stdout[:1200]}")
-    return {"ok": True, "status": response.status_code, "returncode": returncode, "stdout": stdout[-4000:], "stderr": stderr[-2000:]}
+    return {"ok": True, "status": response.status_code, "method": "exec_space_sync", "returncode": returncode, "stdout": stdout[-4000:], "stderr": stderr[-2000:]}
 
 
 def verify_proxy(ctx: ZoProxyDeployContext, *, model: str = "zo:openai/gpt-5.5", chat: bool = True, timeout: float = 90.0) -> dict[str, Any]:
@@ -438,7 +830,14 @@ def deploy_proxy(
         timeout=min(timeout, 60.0),
     )
     actual_persona_id = str(persona_result.get("persona_id") or "")
-    routes = build_route_subset(source_dir, actual_persona_id)
+    routes = build_route_subset(
+        source_dir,
+        actual_persona_id,
+        access_token=ctx.access_token,
+        workspace_origin=ctx.workspace_origin,
+        workspace_handle=ctx.handle,
+        expected_path_token=ctx.api_key,
+    )
     sync_result = sync_routes(ctx, routes, session=session, timeout=timeout)
     verify_result = verify_proxy(ctx, model=verify_model, chat=verify_chat, timeout=min(timeout, 120.0)) if verify else {"ok": True, "skipped": True}
     return {

@@ -231,13 +231,13 @@ class ChatGPTBrowserRegister:
             max_retries = 5
             for i in range(max_retries):
                 if "auth.openai.com" in page.url:
-                    self.log(f"[{i+1}] ✓ 已跳转到 auth.openai.com: {page.url}")
+                    self.log(f"[{i+1}] 已跳转到 auth.openai.com: {page.url}")
                     break
 
                 self.log(f"[{i+1}/{max_retries}] 点击登录按钮...")
                 login_clicked = _click_first(page, login_entry_selectors, timeout=3)
                 if login_clicked:
-                    self.log(f"[{i+1}] ✓ 点击成功：{login_clicked}")
+                    self.log(f"[{i+1}] 点击成功: {login_clicked}")
 
                 time.sleep(2)
             else:

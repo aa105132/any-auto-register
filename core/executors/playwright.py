@@ -1,5 +1,6 @@
 """Playwright 执行器 - 支持 headless/headed 模式"""
 from ..base_executor import BaseExecutor, Response
+from ..proxy_utils import build_playwright_proxy_settings
 
 
 class PlaywrightExecutor(BaseExecutor):
@@ -13,6 +14,7 @@ class PlaywrightExecutor(BaseExecutor):
 
     def _init(self):
         from playwright.sync_api import sync_playwright
+
         self._pw = sync_playwright().start()
         launch_opts = {
             "headless": self.headless,
@@ -20,22 +22,26 @@ class PlaywrightExecutor(BaseExecutor):
                 "--disable-blink-features=AutomationControlled",
                 "--disable-dev-shm-usage",
                 "--no-sandbox",
-            ]
+            ],
         }
         if self.proxy:
-            launch_opts["proxy"] = {"server": self.proxy}
+            launch_opts["proxy"] = build_playwright_proxy_settings(self.proxy)
         self._browser = self._pw.chromium.launch(**launch_opts)
-        
-        # 设置更长的默认超时
+
         self._context = self._browser.new_context(
             viewport={"width": 1280, "height": 720},
-            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            user_agent=(
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
         )
-        self._context.set_default_timeout(60000)  # 60秒默认超时
+        self._context.set_default_timeout(60000)
         self._page = self._context.new_page()
 
     def get(self, url, *, headers=None, params=None) -> Response:
         import urllib.parse
+
         if params:
             url = url + "?" + urllib.parse.urlencode(params)
         if headers:
@@ -49,7 +55,9 @@ class PlaywrightExecutor(BaseExecutor):
         )
 
     def post(self, url, *, headers=None, params=None, data=None, json=None) -> Response:
-        import urllib.parse, json as _json
+        import json as _json
+        import urllib.parse
+
         if params:
             url = url + "?" + urllib.parse.urlencode(params)
         post_data = None
@@ -83,51 +91,59 @@ class PlaywrightExecutor(BaseExecutor):
             self._context.add_cookies([
                 {"name": k, "value": v, "domain": domain, "path": "/"} for k, v in cookies.items()
             ])
-    
-    # 浏览器操作方法
+
     def goto(self, url: str, **kwargs):
-        """导航到 URL"""
         return self._page.goto(url, **kwargs)
-    
+
     def fill(self, selector: str, value: str, **kwargs):
-        """填充输入框"""
         return self._page.fill(selector, value, **kwargs)
-    
+
     def click(self, selector: str, **kwargs):
-        """点击元素"""
         return self._page.click(selector, **kwargs)
-    
+
     def wait_for_selector(self, selector: str, **kwargs):
-        """等待元素出现"""
         return self._page.wait_for_selector(selector, **kwargs)
-    
+
     def query_selector(self, selector: str):
-        """查询元素"""
         return self._page.query_selector(selector)
-    
+
     def query_selector_all(self, selector: str):
-        """查询所有匹配元素"""
         return self._page.query_selector_all(selector)
-    
+
     def evaluate(self, script: str, *args):
-        """执行 JavaScript"""
         return self._page.evaluate(script, *args)
-    
+
     def content(self) -> str:
-        """获取页面 HTML"""
         return self._page.content()
-    
+
     @property
     def url(self) -> str:
-        """当前页面 URL"""
         return self._page.url
-    
+
+    @property
+    def page(self):
+        return self._page
+
+    @property
+    def context(self):
+        return self._context
+
+    @property
+    def browser(self):
+        return self._browser
+
     def press(self, selector: str, key: str, **kwargs):
-        """按键"""
         return self._page.press(selector, key, **kwargs)
 
     def close(self) -> None:
-        if self._browser:
-            self._browser.close()
-        if self._pw:
-            self._pw.stop()
+        try:
+            if self._page:
+                self._page.close()
+            if self._context:
+                self._context.close()
+            if self._browser:
+                self._browser.close()
+            if hasattr(self, "_pw") and self._pw:
+                self._pw.stop()
+        except Exception:
+            pass

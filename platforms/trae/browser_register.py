@@ -114,7 +114,7 @@ def _get_trae_cloudide_token(page, log_fn=print) -> tuple:
         """)
         token = (result or {}).get("Result", {}).get("Token", "") or ""
         if token:
-            log_fn(f"✅ 获取到 Cloud-IDE JWT (长度={len(token)})")
+            log_fn(f"[OK] 获取到 Cloud-IDE JWT (长度={len(token)})")
     except Exception as e:
         log_fn(f"⚠️ GetUserToken 失败: {e}")
 
@@ -390,7 +390,7 @@ class TraeBrowserRegister:
                 time.sleep(5)
                 token, user_id, region = _get_trae_cloudide_token(page, self.log)
 
-            self.log(f"✓ 注册成功: {email}")
+            self.log(f"[OK] 注册成功: {email}")
             return {
                 "email": email,
                 "password": password,

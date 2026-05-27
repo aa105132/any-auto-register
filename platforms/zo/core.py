@@ -937,6 +937,7 @@ class ZoClient:
         try:
             response = self._request("GET", _api_url("models/available"), headers={"Authorization": f"Bearer {api_key}", "Accept": "application/json"})
             data = _safe_json(response)
-            return {"ok": response.status_code < 500, "status": response.status_code, "body": data}
+            model_count = len(data.get("data", [])) if isinstance(data, dict) else 0
+            return {"ok": response.status_code < 500, "status": response.status_code, "model_count": model_count}
         except Exception as exc:
             return {"ok": False, "error": repr(exc)}

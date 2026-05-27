@@ -538,7 +538,7 @@ class KiroBrowserRegister:
             self.log("提取 Kiro 访问令牌...")
             tokens = _get_kiro_tokens(page, timeout=20)
 
-            self.log(f"✓ 注册成功: {email}")
+            self.log(f"[OK] 注册成功: {email}")
             return {
                 "email": email,
                 "password": password,

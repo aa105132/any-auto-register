@@ -39,13 +39,10 @@ class _FakeClient:
             "connection_token": "conn-1",
         }
 
-    def probe_gateway_connection(self, connection_string):
-        self.calls.append(("probe_gateway_connection", connection_string))
-        return {
-            "success": True,
-            "model": "gpt-4.1-mini",
-            "checked_at": "2026-04-17T12:00:00Z",
-        }
+    def check_balance_via_connection(self, connection_token):
+        self.calls.append(("check_balance_via_connection", connection_token))
+        # chat.atxp.ai/api/balance returns {"balance": <number>}
+        return {"balance": 3.0}
 
     def complete_clowdbot_tasks(self, privy_token, account_id, email):
         self.calls.append(("complete_clowdbot_tasks", privy_token, account_id, email))
@@ -61,7 +58,7 @@ class _FakeClient:
 
 
 class AtxpWorkerTests(unittest.TestCase):
-    def test_worker_keeps_atxp_credentials_when_clowdbot_fails(self):
+    def test_worker_skips_clowdbot_by_default(self):
         worker_cls = _load_attr(
             self,
             "platforms.atxp.protocol_mailbox",
@@ -83,11 +80,7 @@ class AtxpWorkerTests(unittest.TestCase):
                 ("send_privy_code", "demo@example.com", "ca-fixed-id"),
                 ("authenticate_privy", "demo@example.com", "123456", "ca-fixed-id"),
                 ("fetch_atxp_bundle", "privy-token"),
-                (
-                    "probe_gateway_connection",
-                    "https://accounts.atxp.ai?connection_token=conn-1&account_id=acct-1",
-                ),
-                ("complete_clowdbot_tasks", "privy-token", "acct-1", "demo@example.com"),
+                ("check_balance_via_connection", "conn-1"),
             ],
         )
         self.assertEqual(result["account_id"], "acct-1")
@@ -99,7 +92,60 @@ class AtxpWorkerTests(unittest.TestCase):
             result["connection_string"],
             "https://accounts.atxp.ai?connection_token=conn-1&account_id=acct-1",
         )
-        self.assertEqual(result["gateway_health"]["model"], "gpt-4.1-mini")
+        self.assertEqual(result["clowdbot_status"], "skipped")
+
+    def test_worker_fails_when_balance_insufficient(self):
+        worker_cls = _load_attr(
+            self,
+            "platforms.atxp.protocol_mailbox",
+            "AtxpProtocolMailboxWorker",
+        )
+
+        class _PoorClient(_FakeClient):
+            def check_balance_via_connection(self, connection_token):
+                self.calls.append(("check_balance_via_connection", connection_token))
+                return {"balance": 0.0}
+
+        fake_client = _PoorClient()
+        worker = worker_cls(client=fake_client, log_fn=lambda _message: None)
+
+        with patch("platforms.atxp.protocol_mailbox.uuid.uuid4", return_value="ca-fixed-id"):
+            with self.assertRaises(RuntimeError) as ctx:
+                worker.run(
+                    email="demo@example.com",
+                    password="mailbox-pass",
+                    otp_callback=lambda: "123456",
+                )
+        self.assertIn("余额不足", str(ctx.exception))
+        self.assertIn("$0.00", str(ctx.exception))
+
+    def test_worker_keeps_atxp_credentials_when_clowdbot_fails(self):
+        worker_cls = _load_attr(
+            self,
+            "platforms.atxp.protocol_mailbox",
+            "AtxpProtocolMailboxWorker",
+        )
+        fake_client = _FakeClient()
+        worker = worker_cls(client=fake_client, log_fn=lambda _message: None)
+
+        with patch("platforms.atxp.protocol_mailbox.uuid.uuid4", return_value="ca-fixed-id"):
+            result = worker.run(
+                email="demo@example.com",
+                password="mailbox-pass",
+                otp_callback=lambda: "123456",
+                enable_clowdbot=True,
+            )
+
+        self.assertEqual(
+            fake_client.calls,
+            [
+                ("send_privy_code", "demo@example.com", "ca-fixed-id"),
+                ("authenticate_privy", "demo@example.com", "123456", "ca-fixed-id"),
+                ("fetch_atxp_bundle", "privy-token"),
+                ("check_balance_via_connection", "conn-1"),
+                ("complete_clowdbot_tasks", "privy-token", "acct-1", "demo@example.com"),
+            ],
+        )
         self.assertEqual(result["clowdbot_status"], "failed")
         self.assertIn("claim_email failed", result["task_error"])
 
@@ -116,6 +162,7 @@ class AtxpWorkerTests(unittest.TestCase):
             email="demo@example.com",
             password="mailbox-pass",
             otp_callback=lambda: "123456",
+            enable_clowdbot=True,
         )
 
         self.assertEqual(result["clowdbot_status"], "completed")
@@ -133,7 +180,10 @@ class AtxpWorkerTests(unittest.TestCase):
 class AtxpPlatformTests(unittest.TestCase):
     def test_map_result_uses_connection_string_as_primary_token(self):
         platform_cls = _load_attr(self, "platforms.atxp.plugin", "AtxpPlatform")
-        platform = platform_cls(RegisterConfig(extra={"mail_provider": "cfworker"}), mailbox=None)
+        platform = platform_cls(
+            RegisterConfig(proxy="http://proxy.local:8080", extra={"mail_provider": "cfworker"}),
+            mailbox=None,
+        )
         raw = {
             "email": "demo@example.com",
             "password": "mailbox-pass",
@@ -184,56 +234,97 @@ class AtxpPlatformTests(unittest.TestCase):
 
     def test_platform_adapter_action_and_valid_contracts(self):
         platform_cls = _load_attr(self, "platforms.atxp.plugin", "AtxpPlatform")
-        platform = platform_cls(RegisterConfig(extra={"mail_provider": "cfworker"}), mailbox=None)
+        platform = platform_cls(
+            RegisterConfig(proxy="http://proxy.local:8080", extra={"mail_provider": "cfworker"}),
+            mailbox=None,
+        )
 
         adapter = platform.build_protocol_mailbox_adapter()
-        self.assertEqual(adapter.otp_spec.keyword, "Privy")
+        self.assertEqual(adapter.otp_spec.keyword, "ATXP")
         self.assertEqual(adapter.otp_spec.code_pattern, r"(?<!\d)(\d{6})(?!\d)")
-        self.assertEqual(adapter.otp_spec.wait_message, "等待 Privy 验证码...")
-        self.assertEqual(adapter.otp_spec.success_label, "Privy 验证码")
+        self.assertEqual(adapter.otp_spec.wait_message, "等待 ATXP 验证码...")
+        self.assertEqual(adapter.otp_spec.success_label, "ATXP 验证码")
 
         actions = platform.get_platform_actions()
         self.assertEqual(
             actions,
-            [{"id": "retry_clowdbot_tasks", "label": "重试 Clowdbot 任务", "params": []}],
+            [
+                {"id": "reauth_privy", "label": "重新认证 Privy (邮箱OTP)", "params": []},
+                {"id": "retry_clowdbot_tasks", "label": "一键领取 Clowdbot 奖励", "params": []},
+                {"id": "check_balance", "label": "查询余额", "params": []},
+            ],
         )
 
         account = Account(
             platform="atxp",
             email="demo@example.com",
             password="mailbox-pass",
+            user_id="acct-1",
             token="token-1",
+            extra={"privy_token": "privy-token", "refresh_token": "refresh-1", "account_id": "acct-1"},
         )
         self.assertTrue(platform.check_valid(account))
         self.assertFalse(platform.check_valid(Account(platform="atxp", email="x", password="y", token="")))
 
-        action_result = platform.execute_action("retry_clowdbot_tasks", account, {})
+        captured = {}
+
+        class _RetryClient:
+            def __init__(self, **kwargs):
+                captured["init_kwargs"] = kwargs
+
+            def refresh_privy_token(self, refresh_token):
+                captured["refresh"] = refresh_token
+                return {"token": "refreshed-privy-token", "refresh_token": "refreshed-refresh-1"}
+
+            def complete_clowdbot_tasks(self, privy_token, account_id, email):
+                captured["call"] = (privy_token, account_id, email)
+                return {
+                    "instance_id": "clowd-1",
+                    "claimed_agent_email": "agent@example.com",
+                    "create_clowdbot_completed": True,
+                    "claim_email_completed": True,
+                    "reward_progress": {"claimed": 1, "total": 2},
+                }
+
+        with patch("platforms.atxp.plugin.AtxpClient", _RetryClient):
+            action_result = platform.execute_action("retry_clowdbot_tasks", account, {})
+
+        # refresh_privy_token succeeds → complete_clowdbot_tasks called with refreshed token
+        self.assertEqual(captured["refresh"], "refresh-1")
+        self.assertEqual(captured["call"], ("refreshed-privy-token", "acct-1", "demo@example.com"))
+        self.assertEqual(captured["init_kwargs"]["proxy"], "http://proxy.local:8080")
+        self.assertTrue(callable(captured["init_kwargs"]["log_fn"]))
         self.assertEqual(
             action_result,
-            {"ok": True, "data": {"message": "Clowdbot 重试逻辑将在后续任务中补齐"}},
+            {
+                "ok": True,
+                "data": {
+                    "message": "Clowdbot 任务补跑完成",
+                    "credential_updates": {
+                        "privy_token": "refreshed-privy-token",
+                        "refresh_token": "refreshed-refresh-1",
+                        "clowdbot_instance_id": "clowd-1",
+                        "claimed_agent_email": "agent@example.com",
+                    },
+                    "account_overview": {
+                        "clowdbot_status": "completed",
+                        "create_clowdbot_completed": True,
+                        "claim_email_completed": True,
+                        "reward_progress": {"claimed": 1, "total": 2},
+                        "task_error": "",
+                        "clowdbot_result": {
+                            "instance_id": "clowd-1",
+                            "claimed_agent_email": "agent@example.com",
+                            "create_clowdbot_completed": True,
+                            "claim_email_completed": True,
+                            "reward_progress": {"claimed": 1, "total": 2},
+                        },
+                    },
+                },
+            },
         )
         with self.assertRaises(NotImplementedError):
             platform.execute_action("unsupported_action", account, {})
-
-        worker = adapter.worker_builder(
-            RegistrationContext(
-                platform_name="atxp",
-                platform_display_name="ATXP",
-                platform=platform,
-                identity=type("Identity", (), {"email": "demo@example.com"})(),
-                config=RegisterConfig(proxy="http://proxy.local:8080"),
-                email="demo@example.com",
-                password="mailbox-pass",
-                log_fn=lambda _message: None,
-            ),
-            type("Artifacts", (), {"otp_callback": lambda: "123456"})(),
-        )
-        worker_cls = _load_attr(
-            self,
-            "platforms.atxp.protocol_mailbox",
-            "AtxpProtocolMailboxWorker",
-        )
-        self.assertIsInstance(worker, worker_cls)
 
     def test_platform_adapter_register_runner_and_result_mapper_wire_ctx_fields(self):
         platform_cls = _load_attr(self, "platforms.atxp.plugin", "AtxpPlatform")
@@ -281,6 +372,7 @@ class AtxpPlatformTests(unittest.TestCase):
                     "email": "demo@example.com",
                     "password": "mailbox-pass",
                     "otp_callback": otp_callback,
+                    "enable_clowdbot": False,
                 }
             ],
         )
@@ -319,29 +411,6 @@ class AtxpPlatformTests(unittest.TestCase):
         self.assertTrue(hasattr(atxp_pkg, "AtxpClient"))
         self.assertTrue(hasattr(atxp_pkg, "AtxpProtocolMailboxWorker"))
         self.assertTrue(hasattr(atxp_pkg, "AtxpPlatform"))
-
-
-class AtxpWorkerFailurePolicyTests(unittest.TestCase):
-    def test_worker_treats_gateway_probe_as_hard_dependency(self):
-        worker_cls = _load_attr(
-            self,
-            "platforms.atxp.protocol_mailbox",
-            "AtxpProtocolMailboxWorker",
-        )
-        fake_client = _FakeClient(clowdbot_error=None)
-
-        def _boom(_connection_string):
-            raise RuntimeError("gateway probe failed")
-
-        fake_client.probe_gateway_connection = _boom
-        worker = worker_cls(client=fake_client, log_fn=lambda _message: None)
-
-        with self.assertRaisesRegex(RuntimeError, "gateway probe failed"):
-            worker.run(
-                email="demo@example.com",
-                password="mailbox-pass",
-                otp_callback=lambda: "123456",
-            )
 
 
 if __name__ == "__main__":

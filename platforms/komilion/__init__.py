@@ -1,0 +1,1 @@
+"""Komilion OAuth platform plugin."""

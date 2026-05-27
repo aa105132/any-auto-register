@@ -9,6 +9,7 @@ from scripts.deploy_zo_openai_proxy import (
     build_route_subset,
     load_result_context,
     patch_zo_chat_route,
+    sync_routes,
 )
 
 
@@ -51,6 +52,83 @@ class ZoProxyDeployTests(unittest.TestCase):
         self.assertEqual(ctx.handle, "demo123")
         self.assertEqual(ctx.workspace_origin, "https://demo123.zo.computer")
         self.assertEqual(ctx.api_key, "zo_sk_demo")
+
+    def test_patch_zo_chat_route_uses_current_direct_ask_protocol(self):
+        source = (Path("artifacts") / "zo_openai_proxy_source" / "routes" / "zo-chat-completions.ts").read_text(encoding="utf-8")
+        patched = patch_zo_chat_route(
+            source,
+            "persona-123",
+            access_token="access-demo",
+            workspace_origin="https://demo.zo.computer",
+            workspace_handle="demo",
+        )
+
+        self.assertIn('const EMBEDDED_ACCESS_TOKEN = "access-demo";', patched)
+        self.assertIn('const WORKSPACE_ORIGIN = "https://demo.zo.computer";', patched)
+        self.assertIn('const WORKSPACE_HANDLE = "demo";', patched)
+        self.assertIn('fetch("https://api.zo.computer/ask"', patched)
+        self.assertNotIn('https://api.zo.computer/zo/ask', patched)
+        self.assertIn('q: prompt', patched)
+        self.assertIn('mode: "chat"', patched)
+        self.assertIn('context_paths: []', patched)
+        self.assertIn('command_paths: []', patched)
+        self.assertIn('expanded_paths: []', patched)
+        self.assertIn('"x-zo-streaming-version": "2"', patched)
+        self.assertIn('"X-Zo-Workspace-Origin": WORKSPACE_ORIGIN', patched)
+        self.assertIn('"x-zo-host-key": WORKSPACE_HANDLE', patched)
+        self.assertIn('extractZoSseOutput', patched)
+
+    def test_build_route_subset_can_embed_direct_ask_context_without_writing_source(self):
+        source_dir = Path("artifacts") / "zo_openai_proxy_source"
+        ctx = load_result_context(Path("tests") / "fixtures" / "zo_proxy_context.json") if False else None
+        routes = build_route_subset(
+            source_dir,
+            "persona-xyz",
+            access_token="access-demo",
+            workspace_origin="https://demo.zo.computer",
+            workspace_handle="demo",
+        )
+        chat_route = next(item for item in routes if item["path"] == "/v1/:token/chat/completions")
+        self.assertIn('const EMBEDDED_ACCESS_TOKEN = "access-demo";', chat_route["code"])
+        source = (source_dir / "routes" / "zo-chat-completions.ts").read_text(encoding="utf-8")
+        self.assertNotIn("access-demo", source)
+
+    def test_sync_routes_uses_mcp_write_space_route_when_api_key_available(self):
+        class FakeResponse:
+            status_code = 200
+            ok = True
+            text = '{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"ok"}],"isError":false}}'
+
+            def json(self):
+                return json.loads(self.text)
+
+        class FakeSession:
+            def __init__(self):
+                self.calls = []
+
+            def post(self, url, headers=None, json=None, timeout=None):
+                self.calls.append({"url": url, "headers": headers or {}, "json": json or {}, "timeout": timeout})
+                return FakeResponse()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result_path = Path(tmp) / "zo_e2e_result.json"
+            result_path.write_text(json.dumps({
+                "api_key": "zo_sk_demo",
+                "cookies": {"access_token": "jwt"},
+                "workspace_result": {"workspace": {"handle": "demo", "origin": "https://demo.zo.computer"}},
+            }), encoding="utf-8")
+            ctx = load_result_context(result_path)
+        session = FakeSession()
+        result = sync_routes(ctx, [{"path": "/v1/:token/models", "type": "api", "public": True, "code": "export default () => new Response('ok')"}], session=session)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(session.calls[0]["url"], "https://api.zo.computer/mcp")
+        payload = session.calls[0]["json"]
+        self.assertEqual(payload["method"], "tools/call")
+        self.assertEqual(payload["params"]["name"], "write_space_route")
+        self.assertEqual(payload["params"]["arguments"]["route_type"], "api")
+        self.assertEqual(session.calls[0]["headers"]["Authorization"], "Bearer zo_sk_demo")
+        self.assertNotIn("/exec", repr(session.calls))
 
 
 if __name__ == "__main__":

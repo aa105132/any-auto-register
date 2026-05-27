@@ -105,6 +105,15 @@ class ChatGPTPlatform(BasePlatform):
                 provider=(self.config.extra or {}).get("mail_provider", "tempmail_lol"),
                 proxy_url=ctx.proxy,
                 log_fn=ctx.log,
+                sub_mail_mode=str(ctx.extra.get("sub_mail_mode", "") or ""),
+                sub_mail_length=ctx.extra.get("sub_mail_length", 4),
+                otp_timeout=resolve_timeout(ctx.extra, ("registration.otp_timeout", "registration.timeout"), 120),
+                otp_resend_interval=resolve_timeout(ctx.extra, ("registration.otp_resend_interval",), 10),
+                login_otp_timeout=resolve_timeout(
+                    ctx.extra,
+                    ("registration.login_otp_timeout", "registration.otp_timeout", "registration.timeout"),
+                    120,
+                ),
             )
 
         def _map_result(ctx, result):
@@ -120,6 +129,7 @@ class ChatGPTPlatform(BasePlatform):
                     "id_token": result.id_token,
                     "session_token": result.session_token,
                     "workspace_id": result.workspace_id,
+                    "registration_metadata": dict(result.metadata or {}),
                 },
             )
 

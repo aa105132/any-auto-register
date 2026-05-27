@@ -1,5 +1,9 @@
 """共享的 OAuth 浏览器辅助（支持普通 Playwright / Chrome Profile / CDP）。"""
+import shutil
+import tempfile
 import time
+import uuid
+from pathlib import Path
 from typing import Callable, Iterable, Optional
 from urllib.parse import urlparse
 
@@ -86,6 +90,184 @@ def _detect_chrome_user_data_dir() -> str:
     return path if os.path.isdir(path) else ""
 
 
+
+def _find_external_chromium_executable() -> str:
+    """Return a real desktop Chrome/Edge executable path, if available."""
+    import os
+    import shutil
+    import sys
+
+    candidates: list[str] = []
+    if sys.platform == "win32":
+        roots = [os.environ.get("PROGRAMFILES", ""), os.environ.get("PROGRAMFILES(X86)", ""), os.environ.get("LOCALAPPDATA", "")]
+        for root in roots:
+            if not root:
+                continue
+            candidates.extend([
+                os.path.join(root, "Google", "Chrome", "Application", "chrome.exe"),
+                os.path.join(root, "Microsoft", "Edge", "Application", "msedge.exe"),
+            ])
+    elif sys.platform == "darwin":
+        candidates.extend([
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+        ])
+    else:
+        for name in ("google-chrome", "google-chrome-stable", "chromium-browser", "chromium", "microsoft-edge"):
+            found = shutil.which(name)
+            if found:
+                candidates.append(found)
+    for candidate in candidates:
+        if candidate and os.path.isfile(candidate):
+            return candidate
+    return ""
+
+
+def _build_external_chromium_args(port: int, user_data_dir: str, initial_url: str = "about:blank") -> list[str]:
+    """Build visible desktop Chromium args for CDP OAuth automation.
+
+    Do not force --use-gl/--use-angle here: on this Windows host those flags
+    caused GPU startup crashes and Target closed/Target crashed symptoms.
+    """
+    return [
+        f"--remote-debugging-port={int(port)}",
+        "--remote-debugging-address=127.0.0.1",
+        "--remote-allow-origins=*",
+        f"--user-data-dir={str(user_data_dir)}",
+        "--new-window",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-gpu",
+        "--disable-software-rasterizer",
+        initial_url or "about:blank",
+    ]
+
+
+def _wait_for_cdp(port: int, timeout: int = 30) -> bool:
+    import urllib.request
+
+    deadline = time.time() + max(1, timeout)
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{int(port)}/json/version", timeout=1) as r:
+                if getattr(r, "status", 0) == 200:
+                    return True
+        except Exception:
+            time.sleep(0.5)
+    return False
+
+
+def _terminate_process_tree(process: object | None) -> None:
+    """Terminate a browser process and its children on Windows.
+
+    Visible CDP Chrome often leaves renderer/utility child processes alive if only
+    the parent Popen object is terminated. taskkill /T keeps batch OAuth runs from
+    accumulating stray windows while only targeting the process we launched.
+    """
+    if process is None:
+        return
+    try:
+        pid = int(getattr(process, "pid", 0) or 0)
+    except Exception:
+        pid = 0
+    if pid <= 0:
+        return
+    try:
+        import subprocess
+        import sys
+
+        if sys.platform.startswith("win"):
+            subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+            )
+            return
+    except Exception:
+        pass
+    try:
+        process.terminate()
+        process.wait(timeout=5)
+    except Exception:
+        try:
+            process.kill()
+        except Exception:
+            pass
+
+
+def _terminate_chromium_profile_processes(user_data_dir: str) -> None:
+    """Best-effort cleanup for Chrome processes using a specific profile dir."""
+    if not user_data_dir:
+        return
+    try:
+        import subprocess
+        import sys
+
+        if not sys.platform.startswith("win"):
+            return
+        normalized = str(Path(user_data_dir)).replace("'", "''")
+        ps = (
+            "$needle = '" + normalized + "'; "
+            + "$procs = Get-CimInstance Win32_Process -Filter \"name='chrome.exe'\" | "
+            + "Where-Object { $_.CommandLine -like ('*' + $needle + '*') }; "
+            + "foreach ($p in $procs) { & taskkill /PID $p.ProcessId /T /F | Out-Null }"
+        )
+        subprocess.run(
+            ["powershell.exe", "-NoProfile", "-Command", ps],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=15,
+        )
+    except Exception:
+        pass
+
+
+def _cleanup_owned_temp_profile(user_data_dir: str, *, log_fn: Callable[[str], None] = print) -> None:
+    """删除本程序自动创建的临时 Chrome Profile。
+
+    只清理 any_auto_register_chrome_*，避免误删用户手动配置的
+    chrome_user_data_dir 或其它浏览器数据目录。
+    """
+    if not user_data_dir:
+        return
+    profile_dir = Path(user_data_dir)
+    if profile_dir.name.startswith("any_auto_register_chrome_"):
+        try:
+            shutil.rmtree(profile_dir, ignore_errors=True)
+        except Exception as exc:
+            log_fn(f"[OAuthBrowser] cleanup temp Chrome profile failed: {profile_dir} ({exc})")
+
+
+def _launch_external_chromium_cdp(user_data_dir: str, *, port: int = 0, initial_url: str = "about:blank", log_fn: Callable[[str], None] = print) -> tuple[str, object | None]:
+    """Launch a visible system Chrome/Edge and return its CDP URL."""
+    import random
+    import subprocess
+
+    exe = _find_external_chromium_executable()
+    if not exe:
+        return "", None
+    selected_port = int(port or (9300 + random.randint(0, 399)))
+    Path(user_data_dir).mkdir(parents=True, exist_ok=True)
+    args = [exe, *_build_external_chromium_args(selected_port, user_data_dir, initial_url)]
+    try:
+        log_fn(f"[OAuthBrowser] launch external browser CDP: {exe} port={selected_port}")
+        process = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception as exc:
+        log_fn(f"[OAuthBrowser] launch external browser failed: {exc}")
+        return "", None
+    # 真实 Chrome 在 Windows 上偶尔先起窗口、后开放 /json/version。
+    # 之前 35s 会误判 not ready，导致回退到 Playwright persistent context，
+    # YepAPI/Google 更容易触发 CF/验证码。这里拉长等待，确保真的走 CDP。
+    if _wait_for_cdp(selected_port, timeout=120):
+        return f"http://127.0.0.1:{selected_port}", process
+    log_fn(f"[OAuthBrowser] external browser CDP not ready after 120s: port={selected_port}")
+    try:
+        process.terminate()
+    except Exception:
+        pass
+    return "", None
+
 def _relaunch_chrome_with_debug_port(port: int = 9222) -> bool:
     """macOS: 关闭 Chrome 并用远程调试端口重启，成功返回 True。"""
     import subprocess, sys, time
@@ -111,6 +293,8 @@ def _relaunch_chrome_with_debug_port(port: int = 9222) -> bool:
     except Exception:
         pass
     return False
+
+
 
 
 def _build_proxy_config(proxy: Optional[str]) -> Optional[dict]:
@@ -146,18 +330,26 @@ class OAuthBrowser:
         headless: bool = False,
         chrome_user_data_dir: str = "",
         chrome_cdp_url: str = "",
+        reuse_existing_cdp: bool = False,
         log_fn: Callable[[str], None] = print,
     ):
         self.proxy = proxy
         self.headless = headless
         self.chrome_user_data_dir = chrome_user_data_dir
         self.chrome_cdp_url = chrome_cdp_url
+        # 默认不自动复用 9222/9223/9224。并发注册时复用同一个 CDP 会共享
+        # context/profile，导致账号池账号串号、标签页互相抢焦点。只有显式传入
+        # chrome_cdp_url，或设置 reuse_existing_cdp=True，才连接已有浏览器。
+        self.reuse_existing_cdp = bool(reuse_existing_cdp)
         self.log = log_fn
         self._pw = None
         self.browser = None
         self.context = None
         self.page = None
         self._persistent = False  # launch_persistent_context path
+        self._owns_cdp_browser = False
+        self._external_chromium_process = None
+        self._external_chromium_user_data_dir = ""
 
     def __enter__(self):
         self._pw = sync_playwright().start()
@@ -170,13 +362,21 @@ class OAuthBrowser:
             pages = self.context.pages
             self.page = pages[0] if pages else self.context.new_page()
         elif self.chrome_user_data_dir:
-            # Load user Chrome profile (carries Google/GitHub sessions)
+            # 使用 Playwright 控制的真实系统 Chrome persistent context。
+            # 这仍然会打开真实 Chrome 窗口，但不依赖外部 DevTools HTTP 端口，
+            # 避免 Windows 上 Popen Chrome 带 remote-debugging-port 却端口拒绝连接。
             launch_kwargs = {
                 "channel": "chrome",
-                "headless": False,  # persistent context doesn't support headless
+                "headless": False,
+                "args": [
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-first-run",
+                    "--no-default-browser-check",
+                ],
             }
             if proxy_cfg:
                 launch_kwargs["proxy"] = proxy_cfg
+            self.log(f"[OAuthBrowser] launch controlled real Chrome profile: {self.chrome_user_data_dir}")
             self.context = self._pw.chromium.launch_persistent_context(
                 self.chrome_user_data_dir,
                 **launch_kwargs,
@@ -185,31 +385,40 @@ class OAuthBrowser:
             pages = self.context.pages
             self.page = pages[0] if pages else self.context.new_page()
         else:
-            # Auto-detect system Chrome: try CDP first (Chrome already running),
-            # then launch_persistent_context, then fallback to plain Chromium.
-            cdp_url = _detect_running_chrome_cdp()
-            if not cdp_url:
-                # Try to relaunch Chrome with debug port
-                user_data_dir = _detect_chrome_user_data_dir()
-                if user_data_dir:
-                    self.log("[OAuthBrowser] 正在重启 Chrome 并开启远程调试端口...")
-                    if _relaunch_chrome_with_debug_port(9222):
-                        cdp_url = "http://127.0.0.1:9222"
+            # 无显式 profile 时启动独立真实系统 Chrome + 临时 CDP profile。
+            # 并发 OAuth 不能默认探测并复用 9222/9223/9224：那会把多个账号
+            # 放进同一个 Chrome context，造成账号池串号、标签页抢焦点和端口阻塞。
+            cdp_url = ""
+            if self.reuse_existing_cdp:
+                cdp_url = _detect_running_chrome_cdp()
             if cdp_url:
+                self.chrome_cdp_url = cdp_url
                 self.log(f"[OAuthBrowser] 连接已运行的 Chrome (CDP): {cdp_url}")
                 self.browser = self._pw.chromium.connect_over_cdp(cdp_url)
                 self.context = self.browser.contexts[0] if self.browser.contexts else self.browser.new_context()
                 pages = self.context.pages
                 self.page = pages[0] if pages else self.context.new_page()
             else:
-                # Fallback: plain Playwright Chromium
-                self.log("[OAuthBrowser] 未找到系统 Chrome，使用 Playwright Chromium")
-                launch_kwargs = {"headless": self.headless}
-                if proxy_cfg:
-                    launch_kwargs["proxy"] = proxy_cfg
-                self.browser = self._pw.chromium.launch(**launch_kwargs)
-                self.context = self.browser.new_context()
-                self.page = self.context.new_page()
+                temp_profile = str(Path(tempfile.gettempdir()) / f"any_auto_register_chrome_{uuid.uuid4().hex}")
+                cdp_url, process = _launch_external_chromium_cdp(temp_profile, log_fn=self.log)
+                if cdp_url:
+                    self.chrome_cdp_url = cdp_url
+                    self._owns_cdp_browser = True
+                    self._external_chromium_process = process
+                    self._external_chromium_user_data_dir = temp_profile
+                    self.browser = self._pw.chromium.connect_over_cdp(cdp_url)
+                    self.context = self.browser.contexts[0] if self.browser.contexts else self.browser.new_context()
+                    pages = self.context.pages
+                    self.page = pages[0] if pages else self.context.new_page()
+                else:
+                    # 最后兜底才使用 Playwright Chromium。
+                    self.log("[OAuthBrowser] 未找到系统 Chrome，使用 Playwright Chromium")
+                    launch_kwargs = {"headless": self.headless}
+                    if proxy_cfg:
+                        launch_kwargs["proxy"] = proxy_cfg
+                    self.browser = self._pw.chromium.launch(**launch_kwargs)
+                    self.context = self.browser.new_context()
+                    self.page = self.context.new_page()
 
         return self
 
@@ -220,11 +429,18 @@ class OAuthBrowser:
                     self.context.close()
             else:
                 try:
+                    if self.chrome_cdp_url and not self._owns_cdp_browser:
+                        return
                     if self.context:
                         self.context.close()
                 finally:
                     if self.browser:
                         self.browser.close()
+                    if self._external_chromium_process is not None:
+                        _terminate_process_tree(self._external_chromium_process)
+                    if self._external_chromium_user_data_dir:
+                        _terminate_chromium_profile_processes(self._external_chromium_user_data_dir)
+                        _cleanup_owned_temp_profile(self._external_chromium_user_data_dir, log_fn=self.log)
         finally:
             if self._pw:
                 self._pw.stop()
@@ -238,6 +454,13 @@ class OAuthBrowser:
     def active_page(self):
         pages = self.pages()
         return pages[-1] if pages else self.page
+
+    def new_page(self):
+        """创建新页面并返回。"""
+        if not self.context:
+            raise RuntimeError("OAuthBrowser 未初始化")
+        page = self.context.new_page()
+        return page
 
     def goto(self, url: str, *, wait_until: str = "networkidle", timeout: int = 30000) -> None:
         self.active_page().goto(url, wait_until=wait_until, timeout=timeout)
@@ -408,15 +631,20 @@ def try_click_provider_on_page(page, provider: str) -> bool:
         clicked = page.evaluate(
             """
             ({hints, label}) => {
+                const visible = (el) => {
+                    const r = el.getBoundingClientRect();
+                    const st = getComputedStyle(el);
+                    return r.width > 0 && r.height > 0 && st.display !== 'none' && st.visibility !== 'hidden' && st.opacity !== '0';
+                };
                 const nodes = Array.from(
                     document.querySelectorAll('button, a, [role="button"], input[type="submit"], input[type="button"]')
                 );
                 let best = null;
                 for (const node of nodes) {
-                    if (!node || node.disabled) {
+                    if (!node || node.disabled || !visible(node)) {
                         continue;
                     }
-                    const text = [
+                    const rawText = [
                         node.innerText || '',
                         node.textContent || '',
                         node.value || '',
@@ -427,7 +655,9 @@ def try_click_provider_on_page(page, provider: str) -> bool:
                         node.getAttribute('data-connection') || '',
                         node.getAttribute('href') || '',
                         node.getAttribute('title') || '',
-                    ].join(' ').toLowerCase();
+                    ].join(' ').trim();
+                    if (!rawText) continue;
+                    const text = rawText.toLowerCase();
                     let score = 0;
                     if (text.includes(label.toLowerCase())) {
                         score += 3;
@@ -440,13 +670,15 @@ def try_click_provider_on_page(page, provider: str) -> bool:
                     if (score <= 0) {
                         continue;
                     }
-                    if (!best || score > best.score) {
-                        best = { node, score };
+                    const r = node.getBoundingClientRect();
+                    if (!best || score > best.score || (score === best.score && r.width * r.height > best.area)) {
+                        best = { node, score, area: r.width * r.height };
                     }
                 }
                 if (!best) {
                     return false;
                 }
+                best.node.scrollIntoView({block:'center', inline:'center'});
                 best.node.click();
                 return true;
             }

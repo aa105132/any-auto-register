@@ -86,7 +86,7 @@ def build_link_callback(
 
     def link_cb():
         ctx.log(wait_message)
-        before_ids = mailbox.get_current_ids(mail_acct)
+        before_ids = getattr(ctx.identity, "before_ids", set())
         kwargs = {"keyword": keyword, "before_ids": before_ids}
         if timeout is not None:
             kwargs["timeout"] = timeout
@@ -97,3 +97,38 @@ def build_link_callback(
         return link
 
     return link_cb
+
+
+def build_phone_callback(ctx: RegistrationContext):
+    phone_provider = getattr(ctx.platform, "phone_provider", None)
+    if not phone_provider:
+        return None
+
+    state = {"account": None, "stage": "phone"}
+
+    def phone_cb():
+        if state["account"] is None:
+            ctx.log("等待手机号来源分配号码...")
+            account = phone_provider.get_phone()
+            state["account"] = account
+            state["stage"] = "code"
+            phone = str(getattr(account, "phone", "") or "")
+            if phone:
+                ctx.log(f"手机号来源返回号码: {phone[:4]}****")
+            return phone
+
+        ctx.log("等待短信验证码...")
+        timeout = resolve_timeout(ctx.extra, ("phone_otp_timeout", "haozhu_phone_timeout"), 180)
+        poll_interval = resolve_timeout(ctx.extra, ("phone_poll_interval", "haozhu_poll_interval"), 15)
+        code_pattern = str(ctx.extra.get("phone_code_pattern") or "").strip() or None
+        code = phone_provider.wait_for_code(
+            state["account"],
+            timeout=timeout,
+            poll_interval=poll_interval,
+            code_pattern=code_pattern,
+        )
+        if code:
+            ctx.log(f"短信验证码: {code}")
+        return code
+
+    return phone_cb

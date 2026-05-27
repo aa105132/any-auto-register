@@ -8,6 +8,7 @@ class PlatformCapabilities:
     supported_executors: list[str] = field(default_factory=list)
     supported_identity_modes: list[str] = field(default_factory=list)
     supported_oauth_providers: list[str] = field(default_factory=list)
+    default_mail_provider: str = ""
 
 
 @dataclass(slots=True)

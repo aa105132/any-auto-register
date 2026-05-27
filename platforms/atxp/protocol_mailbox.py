@@ -22,6 +22,7 @@ class AtxpProtocolMailboxWorker:
         email: str,
         password: str,
         otp_callback: Callable[[], str] | None = None,
+        enable_clowdbot: bool = False,
     ) -> dict:
         ca_id = str(uuid.uuid4())
         self.client.send_privy_code(email, ca_id)
@@ -35,6 +36,7 @@ class AtxpProtocolMailboxWorker:
             raise RuntimeError("Privy 登录成功但未返回 token")
 
         bundle = self.client.fetch_atxp_bundle(privy_token)
+
         account_id = str(bundle.get("account_id") or "").strip()
         connection_token = str(bundle.get("connection_token") or "").strip()
         if not account_id or not connection_token:
@@ -44,7 +46,20 @@ class AtxpProtocolMailboxWorker:
             f"https://accounts.atxp.ai?connection_token={connection_token}"
             f"&account_id={account_id}"
         )
-        gateway_health = self.client.probe_gateway_connection(connection_string)
+        balance_data = self.client.check_balance_via_connection(connection_token)
+        balance = balance_data.get("balance") or {}
+        if isinstance(balance, (int, float)):
+            # chat.atxp.ai/api/balance returns {"balance": <number>}
+            iou = float(balance)
+            usdc = 0.0
+        else:
+            usdc = float(balance.get("usdc", 0) or 0)
+            iou = float(balance.get("iou", 0) or 0)
+        total = usdc + iou
+        if total < 3.0:
+            raise RuntimeError(
+                f"ATXP 余额不足 ${total:.2f}，注册失败（需要 >= $3）"
+            )
 
         result = {
             "email": email,
@@ -57,8 +72,8 @@ class AtxpProtocolMailboxWorker:
             "wallet_address": str(bundle.get("wallet_address") or "").strip(),
             "me": bundle.get("me") or {},
             "wallet_info": bundle.get("wallet_info") or {},
-            "gateway_health": gateway_health or {},
-            "clowdbot_status": "pending",
+            "balance": balance,
+            "clowdbot_status": "skipped",
             "create_clowdbot_completed": False,
             "claim_email_completed": False,
             "reward_progress": None,
@@ -68,25 +83,53 @@ class AtxpProtocolMailboxWorker:
             "claimed_agent_email": "",
         }
 
-        try:
-            clowdbot_runner = getattr(self.client, "complete_clowdbot_tasks")
-            if not callable(clowdbot_runner):
-                raise AttributeError("AtxpClient.complete_clowdbot_tasks 不可调用")
-            task_result = clowdbot_runner(privy_token, account_id, email) or {}
-            result.update(
-                {
-                    "clowdbot_status": "completed",
-                    "clowdbot_instance_id": str(task_result.get("instance_id") or "").strip(),
-                    "claimed_agent_email": str(task_result.get("claimed_agent_email") or "").strip(),
-                    "create_clowdbot_completed": bool(task_result.get("create_clowdbot_completed")),
-                    "claim_email_completed": bool(task_result.get("claim_email_completed")),
-                    "reward_progress": task_result.get("reward_progress"),
-                    "task_error": "",
-                    "clowdbot_result": task_result,
-                }
-            )
-        except Exception as exc:
-            result["clowdbot_status"] = "failed"
-            result["task_error"] = str(exc)
+        result["key_sync"] = self._sync_keys(connection_string)
+
+        if enable_clowdbot:
+            try:
+                self.log("Clowdbot 任务开始...")
+                clowdbot_runner = getattr(self.client, "complete_clowdbot_tasks")
+                if not callable(clowdbot_runner):
+                    raise AttributeError("AtxpClient.complete_clowdbot_tasks 不可调用")
+                task_result = clowdbot_runner(privy_token, account_id, email) or {}
+                result.update(
+                    {
+                        "clowdbot_status": "completed",
+                        "clowdbot_instance_id": str(task_result.get("instance_id") or "").strip(),
+                        "claimed_agent_email": str(task_result.get("claimed_agent_email") or "").strip(),
+                        "create_clowdbot_completed": bool(task_result.get("create_clowdbot_completed")),
+                        "claim_email_completed": bool(task_result.get("claim_email_completed")),
+                        "reward_progress": task_result.get("reward_progress"),
+                        "task_error": "",
+                        "clowdbot_result": task_result,
+                    }
+                )
+            except Exception as exc:
+                result["clowdbot_status"] = "failed"
+                result["task_error"] = str(exc)
 
         return result
+
+    def _sync_keys(self, connection_string: str) -> dict:
+        """POST connection_string 到 atxp_key_sync_url。失败非致命。"""
+        from core.config_store import config_store
+
+        sync_url = str(config_store.get("atxp_key_sync_url") or "").strip()
+        if not sync_url:
+            return {"synced": False, "reason": "atxp_key_sync_url 未配置"}
+
+        import requests
+
+        try:
+            self.log(f"同步 key 到远端: {sync_url}")
+            resp = requests.post(
+                sync_url,
+                json=[connection_string],
+                headers={"content-type": "application/json"},
+                timeout=15,
+            )
+            resp.raise_for_status()
+            return {"synced": True, "url": sync_url, "status": resp.status_code}
+        except Exception as exc:
+            self.log(f"key 同步失败: {exc}")
+            return {"synced": False, "url": sync_url, "error": str(exc)}

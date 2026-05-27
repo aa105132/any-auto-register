@@ -4,6 +4,8 @@ export type ProviderField = {
   placeholder?: string
   secret?: boolean
   category?: string
+  type?: string
+  options?: Array<{ value: string; label: string }>
 }
 
 export type ProviderOption = {
@@ -37,10 +39,13 @@ export type CaptchaPolicy = {
 export type ConfigOptionsResponse = {
   mailbox_providers: ProviderOption[]
   captcha_providers: ProviderOption[]
+  phone_providers?: ProviderOption[]
   mailbox_drivers?: ProviderDriver[]
   captcha_drivers?: ProviderDriver[]
+  phone_drivers?: ProviderDriver[]
   mailbox_settings?: ProviderSetting[]
   captcha_settings?: ProviderSetting[]
+  phone_settings?: ProviderSetting[]
   captcha_policy?: CaptchaPolicy
 }
 
@@ -67,11 +72,12 @@ export function getProviderSelectOptions(providers: ProviderOption[]): Array<[st
   return providers.map(provider => [provider.value, provider.label])
 }
 
-export function listProviderFieldKeys(providers: ProviderOption[] = []): string[] {
+export function listProviderFieldKeys(providers: ProviderOption[] = [], categories?: string[]): string[] {
   const keys = new Set<string>()
+  const allowed = categories ? new Set(categories) : null
   providers.forEach(provider => {
     ;(provider.fields || []).forEach(field => {
-      if (field.key) {
+      if (field.key && (!allowed || allowed.has(field.category || ''))) {
         keys.add(field.key)
       }
     })

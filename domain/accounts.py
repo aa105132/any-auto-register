@@ -96,3 +96,5 @@ class AccountExportSelection:
     select_all: bool = False
     status_filter: str = ""
     search_filter: str = ""
+    field_keys: list[str] = field(default_factory=list)
+    exclude_zero_balance: bool = False

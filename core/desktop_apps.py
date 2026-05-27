@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import io
+import locale
 import os
 import platform
 import shutil
@@ -9,17 +10,40 @@ import subprocess
 from typing import Iterable
 
 
+def _decode_command_output(value: bytes | str | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    try:
+        return value.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    encodings = [locale.getpreferredencoding(False)]
+    if platform.system() == "Windows":
+        encodings.extend(["mbcs", "gbk", "cp936"])
+    for encoding in encodings:
+        if not encoding:
+            continue
+        try:
+            return value.decode(encoding, errors="replace")
+        except Exception:
+            continue
+    return value.decode("utf-8", errors="replace")
+
+
 def _run_command(cmd: list[str]) -> tuple[bool, str]:
     creationflags = 0x08000000 if platform.system() == "Windows" else 0
     try:
         completed = subprocess.run(
             cmd,
-            capture_output=True,
-            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             timeout=5,
             creationflags=creationflags,
         )
-        return completed.returncode == 0, (completed.stdout or completed.stderr or "").strip()
+        output = _decode_command_output(completed.stdout or completed.stderr or b"").strip()
+        return completed.returncode == 0, output
     except Exception:
         return False, ""
 
