@@ -12,7 +12,10 @@ export function TaskLogPanel({
 }) {
   const [lines, setLines] = useState<string[]>([])
   const [doneStatus, setDoneStatus] = useState<string | null>(null)
-  const bottomRef = useRef<HTMLDivElement>(null)
+  const [successCount, setSuccessCount] = useState(0)
+  const [failCount, setFailCount] = useState(0)
+  const viewportRef = useRef<HTMLDivElement>(null)
+  const followOutputRef = useRef(true)
   const seenEventIdsRef = useRef<Set<number>>(new Set())
   const cursorRef = useRef(0)
   const doneRef = useRef(false)
@@ -30,8 +33,11 @@ export function TaskLogPanel({
     cursorRef.current = 0
     doneRef.current = false
     sseHealthyRef.current = false
+    followOutputRef.current = true
     setLines([])
     setDoneStatus(null)
+    setSuccessCount(0)
+    setFailCount(0)
 
     const pushEvent = (payload: any) => {
       const eventId = Number(payload?.id || 0)
@@ -41,7 +47,10 @@ export function TaskLogPanel({
         cursorRef.current = Math.max(cursorRef.current, eventId)
       }
       if (payload?.line) {
-        setLines(prev => [...prev, payload.line])
+        const l = payload.line as string
+        if (l.includes('✓') && l.includes('注册成功')) setSuccessCount(c => c + 1)
+        if ((l.includes('✗') && l.includes('注册失败')) || (l.includes('✗') && l.includes('失败'))) setFailCount(c => c + 1)
+        setLines(prev => [...prev, l])
       }
       if (payload?.done && !doneRef.current) {
         doneRef.current = true
@@ -99,45 +108,59 @@ export function TaskLogPanel({
   }, [taskId])
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    const viewport = viewportRef.current
+    if (!viewport) return
+    if (!followOutputRef.current) return
+    viewport.scrollTop = viewport.scrollHeight
   }, [lines])
 
+  const handleViewportScroll = () => {
+    const viewport = viewportRef.current
+    if (!viewport) return
+    const distanceFromBottom = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight
+    followOutputRef.current = distanceFromBottom <= 24
+  }
+
+  const total = successCount + failCount
+
   return (
-    <div className="flex flex-col h-full">
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <div>
-          <div className="text-[11px] uppercase tracking-[0.18em] text-[var(--text-muted)]">日志</div>
-          <div className="mt-1 text-sm font-medium text-[var(--text-primary)]">任务执行日志</div>
+    <div className="flex flex-col h-full gap-3">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2.5">
+          <span className="text-sm font-medium text-[var(--color-text)]">执行日志</span>
+          <span className="rounded-full border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-0.5 text-[11px] font-medium text-[var(--color-text-secondary)]">
+            {doneStatus ? getTaskStatusText(doneStatus) : '进行中'}
+          </span>
         </div>
-        <div className="rounded-full border border-[var(--border-soft)] bg-[var(--chip-bg)] px-3 py-1 text-xs text-[var(--text-secondary)]">
-          {doneStatus ? getTaskStatusText(doneStatus) : '进行中'}
-        </div>
+        {total > 0 && (
+          <div className="flex items-center gap-1.5 text-[11px] tabular-nums">
+            <span className="text-emerald-400 font-medium">{successCount}</span>
+            <span className="text-[var(--color-text-muted)]">/</span>
+            <span className="text-red-400 font-medium">{failCount}</span>
+            <span className="text-[var(--color-text-muted)]">/</span>
+            <span className="text-[var(--color-text-secondary)]">{total}</span>
+          </div>
+        )}
       </div>
-      <div className="flex-1 overflow-y-auto rounded-[22px] border border-[var(--border)] bg-[linear-gradient(180deg,rgba(3,8,8,0.45),rgba(3,8,8,0.24))] p-4 font-mono text-xs space-y-1 min-h-[220px] max-h-[420px] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
-        {lines.length === 0 && <div className="text-[var(--text-muted)]">等待日志...</div>}
+      <div
+        ref={viewportRef}
+        onScroll={handleViewportScroll}
+        className="flex-1 overflow-y-auto rounded-xl border border-[var(--color-border)] bg-[var(--color-bg)]/60 px-3 py-2.5 font-mono text-[11px] leading-[1.7] space-y-px min-h-[200px] max-h-[50vh]"
+      >
+        {lines.length === 0 && <div className="text-[var(--color-text-muted)] py-2">等待日志...</div>}
         {lines.map((line, index) => (
           <div
             key={index}
-            className={`leading-5 rounded-xl px-2.5 py-1 ${
+            className={`rounded-md px-2 py-0.5 ${
               line.includes('✓') || line.includes('成功') ? 'text-emerald-400' :
               line.includes('✗') || line.includes('失败') || line.includes('错误') ? 'text-red-400' :
-              'text-[var(--text-secondary)]'
+              'text-[var(--color-text-secondary)]'
             }`}
           >
             {line}
           </div>
         ))}
-        <div ref={bottomRef} />
       </div>
-      {doneStatus && (
-        <div className={`mt-3 inline-flex w-fit rounded-full border px-3 py-1 text-xs ${
-          doneStatus === 'succeeded' ? 'text-emerald-400' :
-          doneStatus === 'interrupted' || doneStatus === 'cancelled' ? 'text-amber-400' :
-          'text-red-400'
-        }`}>
-          {getTaskStatusText(doneStatus)}
-        </div>
-      )}
     </div>
   )
 }

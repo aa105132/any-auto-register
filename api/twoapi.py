@@ -146,6 +146,29 @@ def refill_plugin_accounts(plugin: str, body: TwoAPIRefillRequest):
         extra=body.extra,
     )
 
+
+
+@management_router.get("/plugins/{plugin}/settings")
+def get_plugin_settings(plugin: str):
+    manager = get_twoapi_manager()
+    try:
+        manager.get_plugin(plugin)
+        return manager.serialize_plugin_settings(plugin)
+    except KeyError as exc:
+        raise HTTPException(404, "插件不存在") from exc
+
+
+@management_router.post("/plugins/{plugin}/settings")
+def save_plugin_settings(plugin: str, body: TwoAPISettingsRequest):
+    manager = get_twoapi_manager()
+    try:
+        manager.get_plugin(plugin)
+        data = {key: value for key, value in body.model_dump().items() if value is not None}
+        return manager.save_plugin_settings(plugin, data)
+    except KeyError as exc:
+        raise HTTPException(404, "插件不存在") from exc
+
+
 @management_router.post("/plugins/{plugin}/refresh-credits")
 def refresh_plugin_credits(plugin: str):
     manager = get_twoapi_manager()

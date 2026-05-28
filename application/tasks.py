@@ -920,6 +920,11 @@ def create_task(
 def create_register_task(payload: dict[str, Any]) -> dict[str, Any]:
     normalized_payload = dict(payload)
     normalized_payload["extra"] = dict(payload.get("extra") or {})
+    if (
+        str(normalized_payload.get("platform") or "").strip().lower() == "swarms"
+        and str(normalized_payload["extra"].get("swarms_registration_mode") or "").strip().lower() == "browser"
+    ):
+        normalized_payload["executor_type"] = "headed"
     raw_lines = list(payload.get("lines") or [])
     if raw_lines:
         parsed_lines = parse_account_import_lines(raw_lines)
@@ -1569,6 +1574,87 @@ def _auto_push_zo_twoapi(task_logger: TaskLogger, account, task_extra: dict[str,
         task_logger.log(f"  [Zo2API] 远端推送完成: pushed=1 target={import_url}")
     except Exception as exc:
         task_logger.log(f"  [Zo2API] 自动推送异常: {exc}", level="warning")
+
+
+def _build_swarms_twoapi_record_from_account(account: Any, *, source: str = "registration") -> dict[str, Any]:
+    if str(getattr(account, "platform", "") or "").strip().lower() != "swarms":
+        return {}
+    extra = dict(getattr(account, "extra", {}) or {})
+    api_key = str(extra.get("api_key") or extra.get("ai_api_token") or getattr(account, "token", "") or "").strip()
+    if not api_key:
+        return {}
+    user_info = extra.get("user_info") if isinstance(extra.get("user_info"), dict) else {}
+    record: dict[str, Any] = {
+        "email": str(getattr(account, "email", "") or extra.get("email", "") or "").strip(),
+        "password": str(getattr(account, "password", "") or extra.get("password", "") or ""),
+        "user_id": str(getattr(account, "user_id", "") or extra.get("user_id") or user_info.get("id") or ""),
+        "api_key": api_key,
+        "ai_api_token": api_key,
+        "base_url": str(extra.get("base_url") or extra.get("openai_base_url") or "https://api.swarms.world/v1").strip(),
+        "openai_base_url": str(extra.get("openai_base_url") or extra.get("base_url") or "https://api.swarms.world/v1").strip(),
+        "native_api_base": str(extra.get("native_api_base") or extra.get("openai_base_url") or "https://api.swarms.world/v1").strip(),
+        "credit_amount": float(extra.get("credit_amount") or 100.0),
+        "native_openai": True,
+        "ok": True,
+        "source": str(source or "registration"),
+        "import_source": str(source or "registration"),
+        "saved_at": int(time.time()),
+    }
+    for key in ("api_key_info", "access_token", "refresh_token", "user_info", "cookie_map", "account_overview"):
+        value = extra.get(key)
+        if value not in (None, "", {}, []):
+            record[key] = value
+    cookies = extra.get("cookie_map") or extra.get("cookies")
+    if isinstance(cookies, dict) and cookies:
+        record["cookies"] = cookies
+    return record if record.get("email") else {}
+
+
+def _auto_push_swarms_twoapi(task_logger: TaskLogger, account, task_extra: dict[str, Any] | None = None) -> None:
+    if str(getattr(account, "platform", "") or "").strip().lower() != "swarms":
+        return
+    extra = dict(task_extra or {})
+    mode = str(extra.get("twoapi_push_mode") or "none").strip().lower()
+    if mode in {"", "none", "off", "disabled", "false", "0"}:
+        return
+    if mode not in {"local", "remote"}:
+        task_logger.log(f"  [Swarms2API] 未知推送模式: {mode}", level="warning")
+        return
+    record = _build_swarms_twoapi_record_from_account(account, source=f"registration-{mode}")
+    if not record:
+        task_logger.log("  [Swarms2API] 没有可导入的 Swarms 账号记录", level="warning")
+        return
+    try:
+        from services.twoapi.manager import get_twoapi_manager
+
+        manager = get_twoapi_manager()
+        if mode == "local":
+            result = manager.import_plugin_accounts("swarms", records=[record], source="registration-local")
+            imported = result.get("imported", result.get("created", 0))
+            updated = result.get("updated", 0)
+            task_logger.log(f"  [Swarms2API] 本地导入完成: imported={imported} updated={updated}")
+            return
+        target_url = str(extra.get("twoapi_push_target_url") or "").strip()
+        if not target_url:
+            task_logger.log("  [Swarms2API] 远端推送已跳过: 未填写远端 2API 后端地址", level="warning")
+            return
+        plugin = manager.get_plugin("swarms")
+        import_url = plugin._push_target_import_url(target_url)
+        response = plugin.transport.post(
+            import_url,
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            json={"source": "registration-remote", "records": [record]},
+            timeout=max(1.0, float(extra.get("twoapi_push_timeout") or 30.0)),
+        )
+        try:
+            data = response.json()
+        except Exception:
+            data = {"raw": str(getattr(response, "text", "") or "")[:500]}
+        if not getattr(response, "ok", False):
+            raise RuntimeError(f"status={getattr(response, 'status_code', 0)} body={str(data)[:300]}")
+        task_logger.log(f"  [Swarms2API] 远端推送完成: pushed=1 target={import_url}")
+    except Exception as exc:
+        task_logger.log(f"  [Swarms2API] 自动推送异常: {exc}", level="warning")
 
 
 def _auto_export_swarms_key(task_logger: TaskLogger, account) -> None:
@@ -2350,6 +2436,7 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
             _auto_export_lemondata_key(logger, account)
             _auto_export_zo_key(logger, account)
             _auto_push_zo_twoapi(logger, account, extra)
+            _auto_push_swarms_twoapi(logger, account, extra)
             _auto_export_swarms_key(logger, account)
             _auto_export_featherless_key(logger, account)
             _auto_export_jiekou_key(logger, account)

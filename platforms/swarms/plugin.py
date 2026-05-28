@@ -1,12 +1,13 @@
 """Swarms Marketplace 平台插件。
 
 纯协议注册链路（无 Turnstile）：
-  1. Supabase GoTrue /auth/v1/signup 注册
+  1. Swarms Marketplace /signin/signup Next Server Action 注册
   2. 邮箱收取确认链接 → 解析 token_hash + type=signup
   3. Supabase GoTrue /auth/v1/verify 验证邮箱
   4. /auth/v1/token?grant_type=password 登录
-  5. /auth/v1/user 获取用户信息
-  6. tRPC panel.createApiKey 创建 API Key
+  5. /auth/v1/user + tRPC main.getUser 获取用户信息
+  6. tRPC main.updateUsername/updateFullName 补全资料
+  7. tRPC apiKey.addApiKey 创建 API Key
 
 API Key 格式: sk-xxxx，用于 swarms.world 所有 API 调用。
 """
@@ -16,6 +17,7 @@ from __future__ import annotations
 from core.base_mailbox import BaseMailbox
 from core.base_platform import Account, AccountStatus, BasePlatform, RegisterConfig
 from core.registration import (
+    BrowserRegistrationAdapter,
     LinkSpec,
     ProtocolMailboxAdapter,
     RegistrationResult,
@@ -28,7 +30,7 @@ class SwarmsPlatform(BasePlatform):
     name = "swarms"
     display_name = "Swarms Marketplace"
     version = "1.0.0"
-    supported_executors = ["protocol"]
+    supported_executors = ["protocol", "headed", "headless"]
     supported_identity_modes = ["mailbox"]
 
     def __init__(self, config: RegisterConfig = None, mailbox: BaseMailbox = None):
@@ -45,11 +47,15 @@ class SwarmsPlatform(BasePlatform):
         cookies = dict(result.get("cookies") or {})
         session_cookie = result.get("session_cookie", "")
 
+        profile = dict(result.get("profile") or {})
+        credit_info = result.get("credit_info") if isinstance(result.get("credit_info"), dict) else {}
         account_overview = {
             "email": result.get("email", ""),
             "user_id": result.get("user_id", ""),
             "user_name": result.get("user_name", ""),
+            "username": result.get("username", "") or profile.get("username", ""),
             "api_key_preview": api_key[:12] + "..." if len(api_key) > 12 else api_key,
+            "credit_info": credit_info,
         }
 
         return RegistrationResult(
@@ -62,6 +68,9 @@ class SwarmsPlatform(BasePlatform):
                 "api_key": api_key,
                 "ai_api_token": api_key,
                 "api_key_info": api_key_info,
+                "profile": profile,
+                "username": result.get("username", "") or profile.get("username", ""),
+                "credit_info": credit_info,
                 "access_token": result.get("access_token", ""),
                 "refresh_token": result.get("refresh_token", ""),
                 "user_info": user_info,
@@ -73,6 +82,33 @@ class SwarmsPlatform(BasePlatform):
             },
         )
 
+
+    def build_browser_registration_adapter(self):
+        return BrowserRegistrationAdapter(
+            result_mapper=lambda ctx, result: self._map_swarms_result(
+                result, password=ctx.password or ""
+            ),
+            browser_worker_builder=lambda ctx, artifacts: __import__(
+                "platforms.swarms.browser_mailbox",
+                fromlist=["SwarmsBrowserMailboxWorker"],
+            ).SwarmsBrowserMailboxWorker(
+                headless=ctx.executor_type == "headless",
+                proxy=ctx.proxy,
+                log_fn=ctx.log,
+            ),
+            browser_register_runner=lambda worker, ctx, artifacts: worker.run(
+                email=ctx.identity.email or "",
+                password=ctx.password or "",
+                verification_link_callback=artifacts.verification_link_callback,
+            ),
+            link_spec=LinkSpec(
+                keyword="swarms",
+                timeout=240,
+                wait_message="等待 Swarms 浏览器注册确认链接...",
+                success_label="Swarms 确认链接",
+                preview_chars=120,
+            ),
+        )
     def build_protocol_mailbox_adapter(self):
         return ProtocolMailboxAdapter(
             result_mapper=lambda ctx, result: self._map_swarms_result(

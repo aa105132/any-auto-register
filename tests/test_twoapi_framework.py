@@ -13,6 +13,77 @@ from services.twoapi.plugins.zo import ZoTwoAPIPlugin, parse_zo_proxy_lines
 from services.twoapi.plugins.swarms import SwarmsTwoAPIPlugin
 
 
+class TwoAPIManagerSettingsTests(unittest.TestCase):
+    def test_manager_filters_unsupported_plugin_settings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = TwoAPIManager(data_dir=Path(tmp))
+
+            swarms_settings = manager.save_plugin_settings(
+                "swarms",
+                {
+                    "enabled": True,
+                    "auto_refill": True,
+                    "auto_wake": False,
+                    "wake_timeout": 3,
+                    "keepalive_space_fallback": True,
+                    "minimize_ask_context": False,
+                },
+            )
+
+            self.assertTrue(swarms_settings["enabled"])
+            self.assertTrue(swarms_settings["auto_refill"])
+            self.assertNotIn("auto_wake", swarms_settings)
+            self.assertNotIn("wake_timeout", swarms_settings)
+            self.assertNotIn("keepalive_space_fallback", swarms_settings)
+            self.assertNotIn("minimize_ask_context", swarms_settings)
+
+            raw_settings = json.loads((Path(tmp) / "twoapi_settings.json").read_text(encoding="utf-8"))
+            persisted_swarms_settings = raw_settings["plugins"]["swarms"]
+            self.assertNotIn("auto_wake", persisted_swarms_settings)
+            self.assertNotIn("wake_timeout", persisted_swarms_settings)
+            self.assertNotIn("keepalive_space_fallback", persisted_swarms_settings)
+            self.assertNotIn("minimize_ask_context", persisted_swarms_settings)
+
+            zo_settings = manager.save_plugin_settings(
+                "zo",
+                {
+                    "auto_wake": False,
+                    "wake_timeout": 3,
+                    "keepalive_space_fallback": True,
+                    "minimize_ask_context": False,
+                },
+            )
+
+            self.assertFalse(zo_settings["auto_wake"])
+            self.assertEqual(zo_settings["wake_timeout"], 3)
+            self.assertTrue(zo_settings["keepalive_space_fallback"])
+            self.assertFalse(zo_settings["minimize_ask_context"])
+
+    def test_manager_keeps_plugin_settings_isolated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = TwoAPIManager(data_dir=Path(tmp))
+
+            zo_settings = manager.save_plugin_settings("zo", {"enabled": False, "min_credit": 9})
+            swarms_settings = manager.save_plugin_settings("swarms", {"enabled": True, "min_credit": 1})
+
+            self.assertFalse(zo_settings["enabled"])
+            self.assertEqual(zo_settings["min_credit"], 9)
+            self.assertTrue(swarms_settings["enabled"])
+            self.assertEqual(swarms_settings["min_credit"], 1)
+            self.assertIs(manager.plugins["zo"].settings, manager.get_plugin_settings("zo"))
+            self.assertIs(manager.plugins["swarms"].settings, manager.get_plugin_settings("swarms"))
+            self.assertNotEqual(
+                manager.plugins["zo"].settings.enabled,
+                manager.plugins["swarms"].settings.enabled,
+            )
+
+            reloaded = TwoAPIManager(data_dir=Path(tmp))
+            self.assertFalse(reloaded.get_plugin_settings("zo").enabled)
+            self.assertEqual(reloaded.get_plugin_settings("zo").min_credit, 9)
+            self.assertTrue(reloaded.get_plugin_settings("swarms").enabled)
+            self.assertEqual(reloaded.get_plugin_settings("swarms").min_credit, 1)
+
+
 class TwoAPIFrameworkTests(unittest.TestCase):
     def test_parse_zo_proxy_lines_extracts_base_url_and_key(self):
         accounts = parse_zo_proxy_lines([
@@ -338,6 +409,87 @@ class TwoAPIFrameworkTests(unittest.TestCase):
         self.assertEqual(kwargs["json"]["model"], "gpt-4o")
         self.assertFalse(kwargs["stream"])
 
+
+    def test_swarms_twoapi_push_local_imports_current_registration_account(self):
+        from types import SimpleNamespace
+        from application.tasks import _auto_push_swarms_twoapi
+
+        class Logger:
+            def __init__(self):
+                self.lines = []
+
+            def log(self, message, level="info", **kwargs):
+                self.lines.append((level, message))
+
+        class FakeManager:
+            def __init__(self):
+                self.calls = []
+
+            def import_plugin_accounts(self, plugin, *, records=None, lines=None, source="external"):
+                self.calls.append({"plugin": plugin, "records": records or [], "source": source})
+                return {"ok": True, "created": 1, "updated": 0}
+
+        account = SimpleNamespace(
+            platform="swarms",
+            email="local@swarms.test",
+            password="pw",
+            user_id="user-local",
+            token="sk-local-swarms-demo-12345678901234567890",
+            extra={"api_key": "sk-local-swarms-demo-12345678901234567890"},
+        )
+        logger = Logger()
+        manager = FakeManager()
+
+        with patch("services.twoapi.manager.get_twoapi_manager", return_value=manager):
+            _auto_push_swarms_twoapi(logger, account, {"twoapi_push_mode": "local"})
+
+        self.assertEqual(manager.calls[0]["plugin"], "swarms")
+        self.assertEqual(manager.calls[0]["source"], "registration-local")
+        self.assertEqual(manager.calls[0]["records"][0]["email"], "local@swarms.test")
+        self.assertEqual(manager.calls[0]["records"][0]["api_key"], "sk-local-swarms-demo-12345678901234567890")
+        self.assertTrue(any("本地导入完成" in message for _, message in logger.lines))
+
+    def test_swarms_twoapi_push_remote_posts_current_registration_account(self):
+        from types import SimpleNamespace
+        from application.tasks import _auto_push_swarms_twoapi
+
+        class Logger:
+            def __init__(self):
+                self.lines = []
+
+            def log(self, message, level="info", **kwargs):
+                self.lines.append((level, message))
+
+        response = Mock(status_code=200, ok=True, text='{"ok":true,"created":1}')
+        response.json.return_value = {"ok": True, "created": 1}
+        plugin = Mock()
+        plugin._push_target_import_url.return_value = "http://linux.example:8000/api/2api/plugins/swarms/import"
+        plugin.transport.post.return_value = response
+        manager = Mock()
+        manager.get_plugin.return_value = plugin
+        account = SimpleNamespace(
+            platform="swarms",
+            email="remote@swarms.test",
+            password="pw",
+            user_id="user-remote",
+            token="sk-remote-swarms-demo-12345678901234567890",
+            extra={"api_key": "sk-remote-swarms-demo-12345678901234567890"},
+        )
+        logger = Logger()
+
+        with patch("services.twoapi.manager.get_twoapi_manager", return_value=manager):
+            _auto_push_swarms_twoapi(
+                logger,
+                account,
+                {"twoapi_push_mode": "remote", "twoapi_push_target_url": "http://linux.example:8000"},
+            )
+
+        plugin.transport.post.assert_called_once()
+        body = plugin.transport.post.call_args.kwargs["json"]
+        self.assertEqual(body["source"], "registration-remote")
+        self.assertEqual(body["records"][0]["email"], "remote@swarms.test")
+        self.assertEqual(body["records"][0]["api_key"], "sk-remote-swarms-demo-12345678901234567890")
+        self.assertTrue(any("远端推送完成" in message for _, message in logger.lines))
 
     def test_swarms_auto_export_after_registration_writes_twoapi_credentials(self):
         from types import SimpleNamespace

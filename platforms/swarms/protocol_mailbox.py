@@ -1,17 +1,16 @@
 """Swarms Marketplace 协议邮箱注册 worker。
 
 注册流程:
-  1. Supabase GoTrue signup (email + password)
+  1. Swarms Marketplace /signin/signup Server Action (email + password)
   2. 等待邮箱确认链接 → 解析 token_hash + type=signup
   3. Supabase GoTrue verify → email confirmed
   4. password grant login → access_token + refresh_token
-  5. get user info → user_id
-  6. tRPC createApiKey → API key (sk-xxxx)
+  5. get user info + 补全 username/full_name
+  6. 查询 credit 后 tRPC createApiKey → API key (sk-xxxx)
 """
 
 from __future__ import annotations
 
-import time
 from typing import Callable
 
 from platforms.swarms.core import SwarmsClient
@@ -61,20 +60,33 @@ class SwarmsProtocolMailboxWorker:
 
         self.log(f"解析到 token_hash={token_hash[:16]}... type={verify_type}")
 
-        # 4. 验证邮箱
-        try:
-            self.client.verify_email(token_hash, signup_type=verify_type)
-            self.log("邮箱验证成功")
-        except Exception as exc:
-            self.log(f"邮箱验证失败: {exc}")
-            raise RuntimeError(f"Swarms 邮箱验证失败: {exc}") from exc
+        # 4. 优先按真实浏览器链路打开确认链接。
+        # Swarms 的 $5 初始化和 API Key 创建依赖前端确认回调产生的 sb-db-auth-token；
+        # 仅 POST Supabase verify 后 password login，实测会出现额度为 0 / addApiKey 拒绝。
+        link_verified = False
+        if hasattr(self.client, "verify_email_link"):
+            try:
+                verify_result = self.client.verify_email_link(confirm_url)
+                link_verified = bool(verify_result.get("auth_cookie") or verify_result.get("access_token"))
+                if link_verified:
+                    self.log("邮箱验证成功，已获取 Swarms 回调登录态")
+            except Exception as exc:
+                self.log(f"确认链接登录态验证失败（回退 Supabase verify）: {exc}")
 
-        # 5. 登录获取 token
-        try:
-            self.client.login(email, password)
-        except Exception as exc:
-            self.log(f"登录失败: {exc}")
-            raise RuntimeError(f"Swarms 登录失败: {exc}") from exc
+        if not link_verified:
+            try:
+                self.client.verify_email(token_hash, signup_type=verify_type)
+                self.log("邮箱验证成功")
+            except Exception as exc:
+                self.log(f"邮箱验证失败: {exc}")
+                raise RuntimeError(f"Swarms 邮箱验证失败: {exc}") from exc
+
+            # 5. 登录获取 token
+            try:
+                self.client.login(email, password)
+            except Exception as exc:
+                self.log(f"登录失败: {exc}")
+                raise RuntimeError(f"Swarms 登录失败: {exc}") from exc
 
         return self._post_login(email, password)
 
@@ -85,6 +97,23 @@ class SwarmsProtocolMailboxWorker:
             user_info = self.client.get_user()
         except Exception as exc:
             self.log(f"获取用户信息失败（非阻塞）: {exc}")
+
+        # Swarms Marketplace 原站注册会初始化用户资料/额度；协议链路必须补齐资料后再建 key。
+        profile: dict = {}
+        try:
+            self.log("补全 Swarms 用户资料...")
+            profile = self.client.ensure_profile(email=email, full_name="Auto Register")
+        except Exception as exc:
+            self.log(f"补全 Swarms 用户资料失败（非阻塞）: {exc}")
+
+        credit_info: dict = {}
+        try:
+            if hasattr(self.client, "wait_for_credit"):
+                credit_info = self.client.wait_for_credit(min_credit=0.01, timeout=90, interval=3)
+            else:
+                credit_info = self.client.get_credit()
+        except Exception as exc:
+            self.log(f"查询账户额度失败（非阻塞）: {exc}")
 
         # 创建 API Key
         api_key = ""
@@ -108,12 +137,17 @@ class SwarmsProtocolMailboxWorker:
 
         cookies = self.client.cookies
         session_cookie = "; ".join(f"{k}={v}" for k, v in cookies.items() if v)
+        username = str(profile.get("username") or "")
+        full_name = str(profile.get("full_name") or "")
 
         return {
             "email": email,
             "password": password,
             "user_id": self.client.user_id or user_info.get("id", ""),
-            "user_name": (user_info.get("user_metadata") or {}).get("name", ""),
+            "user_name": full_name or (user_info.get("user_metadata") or {}).get("name", ""),
+            "username": username,
+            "profile": profile,
+            "credit_info": credit_info,
             "api_key": api_key,
             "api_key_info": api_key_info,
             "access_token": self.client.access_token,

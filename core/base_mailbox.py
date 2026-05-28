@@ -65,6 +65,16 @@ def _looks_like_static_asset_link(url: str) -> bool:
     return any(hint in path for hint in _STATIC_LINK_PATH_HINTS)
 
 
+def _clean_extracted_url(raw: str) -> str:
+    """清理从 HTML/Markdown 邮件中抓出的 URL 尾部包装符。"""
+    url = html.unescape(str(raw or "")).strip().strip("<>")
+    # Markdown 链接形如 [https://...](...)，原正则会把 ](...) 一起吃进去。
+    url = re.split(r"\]\(", url, maxsplit=1)[0]
+    # Swarms 邮件里曾出现 /auth/callback]?code=...，需要去掉路径后的 ]。
+    url = re.sub(r"(?i)(/auth/callback)\](\?)", r"\1\2", url)
+    return url.rstrip(").,;'\"]}>")
+
+
 def _extract_verification_link(text: str, keyword: str = "") -> str | None:
     combined = str(text or "")
     lowered = combined.lower()
@@ -73,7 +83,7 @@ def _extract_verification_link(text: str, keyword: str = "") -> str | None:
 
     urls = []
     for raw in re.findall(r'https?://[^\s<>"\']+', combined, re.IGNORECASE):
-        url = html.unescape(raw).rstrip(").,;'\"")
+        url = _clean_extracted_url(raw)
         if _looks_like_static_asset_link(url):
             continue
         urls.append(url)
@@ -81,13 +91,13 @@ def _extract_verification_link(text: str, keyword: str = "") -> str | None:
         return None
 
     primary_link_hints = ("verif", "confirm", "magic", "auth", "callback", "signin", "signup", "continue")
-    primary_host_hints = ("tavily", "firecrawl", "clerk", "stytch", "auth", "login", "fireworks")
+    primary_host_hints = ("tavily", "firecrawl", "clerk", "stytch", "auth", "login", "fireworks", "swarms", "supabase")
     for url in urls:
         url_lower = url.lower()
         if any(token in url_lower for token in primary_link_hints) and any(host in url_lower for host in primary_host_hints):
             return url
 
-    verification_hints = ("verify", "verification", "confirm", "magic link", "sign in", "login", "auth", "tavily", "firecrawl")
+    verification_hints = ("verify", "verification", "confirm", "confirmation", "magic link", "sign in", "login", "auth", "signup", "tavily", "firecrawl", "swarms")
     if not any(token in lowered for token in verification_hints):
         return None
 
