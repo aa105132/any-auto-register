@@ -88,6 +88,25 @@ class MailboxInventorySupportTests(unittest.TestCase):
         self.assertNotIn("used_platforms", result["metadata"])
         self.assertIn("已回收到邮箱池", result["note"])
 
+    def test_resolve_outlook_inventory_register_failure_recycles_mailbox(self):
+        from application.mailbox_inventory_support import resolve_inventory_register_failure
+
+        result = resolve_inventory_register_failure(
+            "outlook_token",
+            {"used_platforms": ["chatgpt"], "blacklist_reason": "old"},
+            registered_email="demo@outlook.com",
+            platform="swarms",
+            error="ProxyError: Tunnel connection failed: 504 Gateway Timeout",
+        )
+
+        self.assertEqual(result["status"], "unused")
+        self.assertEqual(result["metadata"]["remote_email"], "demo@outlook.com")
+        self.assertEqual(result["metadata"]["last_failed_platform"], "swarms")
+        self.assertIn("last_register_error", result["metadata"])
+        self.assertNotIn("blacklist_reason", result["metadata"])
+        self.assertIn("注册失败", result["note"])
+        self.assertIn("回收到邮箱池", result["note"])
+
     def test_resolve_luckmail_timeout_blacklists_only_for_chatgpt(self):
         blacklisted = resolve_inventory_timeout_result(
             "luckmail",

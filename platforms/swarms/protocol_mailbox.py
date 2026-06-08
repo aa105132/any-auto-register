@@ -25,6 +25,8 @@ class SwarmsProtocolMailboxWorker:
     ) -> None:
         self.client = SwarmsClient(proxy=proxy, log_fn=log_fn)
         self.log = log_fn
+        if proxy:
+            self.client.log_proxy_probe()
 
     def run(
         self,
@@ -102,19 +104,22 @@ class SwarmsProtocolMailboxWorker:
         profile: dict = {}
         try:
             self.log("补全 Swarms 用户资料...")
-            profile = self.client.ensure_profile(email=email, full_name="Auto Register")
+            profile = self.client.ensure_profile(email=email, full_name=SwarmsClient.random_full_name())
         except Exception as exc:
             self.log(f"补全 Swarms 用户资料失败（非阻塞）: {exc}")
 
         credit_info: dict = {}
         try:
             if hasattr(self.client, "wait_for_credit"):
-                credit_info = self.client.wait_for_credit(min_credit=0.01, timeout=90, interval=3)
+                credit_info = self.client.wait_for_credit(min_credit=0.01, timeout=15, interval=3)
             else:
                 credit_info = self.client.get_credit()
         except Exception as exc:
-            self.log(f"查询账户额度失败（非阻塞）: {exc}")
+            raise RuntimeError(f"Swarms 查询账户额度失败: {exc}") from exc
 
+        credit_amount = SwarmsClient.credit_amount(credit_info)
+        if credit_amount < 0.01:
+            raise RuntimeError(f"Swarms 额度未到账，跳过创建 API Key: ${credit_amount:g}")
         # 创建 API Key
         api_key = ""
         api_key_info: dict = {}
@@ -133,7 +138,7 @@ class SwarmsProtocolMailboxWorker:
                 pass
 
         if not api_key:
-            self.log("警告: 未能获取 API Key")
+            raise RuntimeError("Swarms 注册后未能获取 API Key")
 
         cookies = self.client.cookies
         session_cookie = "; ".join(f"{k}={v}" for k, v in cookies.items() if v)

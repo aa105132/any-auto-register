@@ -26,6 +26,16 @@ class ProxyUtilsTests(unittest.TestCase):
             },
         )
 
+    def test_build_playwright_proxy_settings_normalizes_socks5h(self):
+        self.assertEqual(
+            build_playwright_proxy_settings("socks5h://demo:secret@proxy.local:1080"),
+            {
+                "server": "socks5://proxy.local:1080",
+                "username": "demo",
+                "password": "secret",
+            },
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -66,7 +66,11 @@ def build_playwright_proxy_settings(proxy: str | None, *, default_scheme: str = 
         return None
 
     parts = _parse_proxy_parts(proxy, default_scheme=default_scheme)
-    result = {"server": f"{parts['scheme']}://{_format_host(parts['host'])}:{parts['port']}"}
+    scheme = parts["scheme"]
+    # requests 支持 socks5h:// 表示远端 DNS；Playwright/Chromium 只接受 socks5://。
+    if scheme.lower() == "socks5h":
+        scheme = "socks5"
+    result = {"server": f"{scheme}://{_format_host(parts['host'])}:{parts['port']}"}
     if parts.get("username"):
         result["username"] = parts["username"]
     if parts.get("password"):

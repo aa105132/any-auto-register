@@ -184,10 +184,17 @@ class CdpTurnstileSolver(BaseCaptcha):
         "/usr/bin/chromium",
     ]
 
-    def __init__(self, chrome_path: str = "", cdp_url: str = "", headless: bool = True):
+    def __init__(
+        self,
+        chrome_path: str = "",
+        cdp_url: str = "",
+        headless: bool = True,
+        navigation_timeout_ms: int = 90000,
+    ):
         self.chrome_path = chrome_path.strip()
         self.cdp_url = cdp_url.strip()
         self.headless = headless
+        self.navigation_timeout_ms = max(int(navigation_timeout_ms or 90000), 30000)
 
     def solve_turnstile(self, page_url: str, site_key: str) -> str:
         try:
@@ -240,8 +247,7 @@ class CdpTurnstileSolver(BaseCaptcha):
                     if is_clerk:
                         token = self._solve_clerk_turnstile(page, page_url, site_key)
                     else:
-                        page.goto(page_url, wait_until="domcontentloaded", timeout=30000)
-                        token = self._click_until_token(page, site_key)
+                        token = self._solve_regular_turnstile(page, page_url, site_key)
                     if not token:
                         raise RuntimeError("CDP Turnstile: failed to obtain token after retries")
                     return token
@@ -306,8 +312,7 @@ class CdpTurnstileSolver(BaseCaptcha):
                     if is_clerk:
                         token = self._solve_clerk_turnstile(page, page_url, site_key)
                     else:
-                        page.goto(page_url, wait_until="domcontentloaded", timeout=30000)
-                        token = self._click_until_token(page, site_key)
+                        token = self._solve_regular_turnstile(page, page_url, site_key)
                     if not token:
                         raise RuntimeError("CDP Turnstile: failed to obtain token after retries")
                     cookies = self._cookie_dict_for_url(ctx, page_url)
@@ -331,6 +336,31 @@ class CdpTurnstileSolver(BaseCaptcha):
             if profile_dir:
                 import threading
                 threading.Thread(target=self._cleanup_dir, args=(profile_dir,), daemon=True).start()
+
+
+    def _solve_regular_turnstile(self, page, page_url: str, site_key: str) -> str:
+        """常规 Turnstile 页面求解。
+
+        Cloudflare 有时会让真实浏览器导航长期停在挑战/中间页，
+        导致 Playwright 的 domcontentloaded 等待超时。但页面主体或
+        Turnstile iframe 可能已经可交互，因此导航超时不应直接中断
+        注册链路，而是继续尝试读取/点击 token。
+        """
+        try:
+            page.goto(
+                page_url,
+                wait_until="domcontentloaded",
+                timeout=self.navigation_timeout_ms,
+            )
+        except Exception as exc:
+            message = str(exc)
+            if "Timeout" not in message and "timeout" not in message:
+                raise
+            try:
+                page.wait_for_timeout(1000)
+            except Exception:
+                pass
+        return self._click_until_token(page, site_key)
 
     @staticmethod
     def _cookie_dict_for_url(context, page_url: str) -> dict[str, str]:
@@ -846,6 +876,7 @@ def create_captcha_solver(provider_key: str, extra: dict | None = None) -> BaseC
             chrome_path=str(merged.get("chrome_path", "") or ""),
             cdp_url=str(merged.get("chrome_cdp_url", "") or ""),
             headless=str(merged.get("cdp_headless", "false") or "false").strip().lower() in {"1", "true", "yes"},
+            navigation_timeout_ms=int(merged.get("cdp_navigation_timeout_ms", 90000) or 90000),
         )
     if driver_type == "patchright_harvester":
         return PatchrightHarvester(

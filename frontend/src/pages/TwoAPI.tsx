@@ -173,7 +173,7 @@ export default function TwoAPI() {
   const plugins: TwoAPIPluginStatus[] = status?.plugins || []
   const selectedPluginStatus = plugins.find((item: any) => item.name === selectedPlugin) || null
   const currentLabel = pluginLabel(selectedPluginStatus, selectedPlugin)
-  const canPushRemote = selectedPlugin === 'zo' || selectedPlugin === 'swarms'
+  const canPushRemote = selectedPlugin === 'zo' || selectedPlugin === 'swarms' || selectedPlugin === 'anycap'
   const canRecoverPlugin = selectedPlugin === 'zo'
   const serverListen = serverStatus?.listen || status?.server?.listen || status?.listen
   const baseUrl = pluginBaseUrl(selectedPlugin, serverListen)

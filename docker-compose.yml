@@ -2,7 +2,7 @@ services:
   app:
     build: .
     ports:
-      - "8000:8000"   # FastAPI / Web UI
+      - "8899:8899"   # FastAPI / Web UI
       - "6080:6080"   # noVNC (headed 浏览器预览)
     environment:
       - DISPLAY=:99

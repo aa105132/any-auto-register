@@ -10,7 +10,7 @@ import requests
 
 from services.twoapi.importer import TwoAPIImportSchema, import_twoapi_accounts
 from services.twoapi.models import TwoAPIAccount, TwoAPISettings, mask_secret_in_text
-from services.twoapi.plugins.zo import LocalJSONResponse
+from services.twoapi.plugins.zo import LocalJSONResponse, StreamingSSEOpenAIResponse
 
 
 def create_register_task(payload: dict[str, Any]) -> dict[str, Any]:
@@ -47,16 +47,56 @@ SWARMS_IMPORT_SCHEMA = TwoAPIImportSchema(
     metadata_defaults={"native_openai": True},
 )
 
+# 仅暴露实测能通过 Swarms 原生 /v1/swarm/completions 返回非空文本的模型。
+# Swarms /models/available 会返回大量图像、音频、embedding 或别名模型；其中不少
+# 对 OpenAI 直连 /chat/completions 会 200 空回；2API 统一用原生 Swarm 包装。
 SWARMS_MODEL_IDS = [
     "gpt-4o",
-    "gpt-4.1",
+    "gpt-4o-mini",
+    "gpt-4o-2024-08-06",
     "gpt-4.1-mini",
+    "gpt-4.1-nano",
+    "gpt-5.5",
+    "gpt-5.5-2026-04-23",
+    "gpt-5.4",
+    "gpt-5.4-2026-03-05",
+    "gpt-5.4-mini",
+    "gpt-5.4-mini-2026-03-17",
+    "gemini/gemini-3.5-flash",
+    "gemini-3.5-flash",
     "claude-opus-4-6",
     "claude-opus-4-5",
-    "claude-opus-4.5",
-    "claude-sonnet-4-5",
-    "claude-sonnet-4.5",
+    "claude-opus-4-5-20251101",
+    "claude-haiku-4-5-20251001",
+    "claude-sonnet-4-20250514",
 ]
+SWARMS_PREMIUM_OR_EMPTY_MODEL_IDS = {
+    "gpt-4.1",
+    # /models/available 已上架，但 2026-05-30 实测 Agent API 与 /v1/swarm/completions 均 200 空回。
+    "claude-opus-4-8",
+    "claude-opus-4.8",
+    "claude-opus-4-7",
+    "claude-opus-4-7-20260416",
+    "claude-sonnet-4-5",
+    "claude-opus-4.5",
+    "claude-sonnet-4.5",
+    "chatgpt-4o-latest",
+    "gpt-5-mini",
+    "gpt-5-nano",
+    "gpt-5-chat-latest",
+    "gpt-5.1",
+    "gpt-5.1-chat-latest",
+    "gpt-5.2",
+    "gpt-5.2-chat-latest",
+    "gpt-5.5",
+    "gpt5.5",
+    "gpt5.4",
+    "gpt-5.5-pro",
+    "gpt-5.5-pro-2026-04-23",
+    "gpt-5.4-pro",
+    "gpt-5.4-pro-2026-03-05",
+    "claude-opus-4-6-20260205",
+}
 
 
 def _safe_text(value: Any) -> str:
@@ -139,6 +179,140 @@ def _normalize_base_url(value: Any) -> str:
     if text.startswith("https://api.swarms.world/v1"):
         return text
     return SWARMS_NATIVE_BASE_URL
+
+
+SWARMS_AGENT_NAME = "Swarms Assistant"
+SWARMS_AGENT_DESCRIPTION = (
+    "A helpful AI assistant powered by Swarms. This agent can help you with a wide range of tasks "
+    "including answering questions, writing, analysis, coding, and more."
+)
+SWARMS_DEFAULT_SYSTEM_PROMPT = "You are Swarms Assistant, a helpful assistant."
+SWARMS_DEFAULT_SWARM_TYPE = "ConcurrentWorkflow"
+SWARMS_DEFAULT_MAX_TOKENS = 8192
+SWARMS_DEFAULT_TEMPERATURE = 0.7
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        if isinstance(value, bool):
+            return default
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _message_content_to_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+                continue
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") == "text" and item.get("text") is not None:
+                parts.append(str(item.get("text") or ""))
+            elif item.get("text") is not None:
+                parts.append(str(item.get("text") or ""))
+            elif item.get("content") is not None:
+                parts.append(str(item.get("content") or ""))
+        return "\n".join(part.strip() for part in parts if part and part.strip())
+    if content is None:
+        return ""
+    return str(content).strip()
+
+
+def _messages_to_system_and_task(messages: Any) -> tuple[str, str]:
+    if not isinstance(messages, list):
+        return SWARMS_DEFAULT_SYSTEM_PROMPT, str(messages or "").strip()
+    system_parts: list[str] = []
+    dialogue: list[str] = []
+    for item in messages:
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role") or "user").strip().lower() or "user"
+        text = _message_content_to_text(item.get("content"))
+        if not text:
+            continue
+        if role in {"system", "developer"}:
+            system_parts.append(text)
+            continue
+        if len(messages) == 1 and role == "user":
+            dialogue.append(text)
+        else:
+            dialogue.append(f"{role}: {text}")
+    system_prompt = "\n\n".join(system_parts).strip() or SWARMS_DEFAULT_SYSTEM_PROMPT
+    task = "\n".join(dialogue).strip()
+    return system_prompt, task
+
+
+def _extract_swarms_output(data: Any) -> str:
+    if isinstance(data, dict):
+        if isinstance(data.get("choices"), list):
+            parts: list[str] = []
+            for choice in data.get("choices") or []:
+                if not isinstance(choice, dict):
+                    continue
+                message = choice.get("message")
+                delta = choice.get("delta")
+                if isinstance(message, dict):
+                    parts.append(_message_content_to_text(message.get("content")))
+                elif isinstance(delta, dict):
+                    parts.append(_message_content_to_text(delta.get("content")))
+            return "\n".join(part for part in parts if part)
+        for key in ("output", "outputs"):
+            value = data.get(key)
+            if isinstance(value, str):
+                return value
+            if isinstance(value, (list, dict)):
+                return _extract_swarms_output(value)
+        for key in ("content", "message", "response", "text"):
+            value = data.get(key)
+            if isinstance(value, str):
+                return value
+            if isinstance(value, (list, dict)):
+                return _extract_swarms_output(value)
+        return ""
+    if isinstance(data, list):
+        parts = [_extract_swarms_output(item) for item in data]
+        return "\n".join(part for part in parts if part)
+    if data is None:
+        return ""
+    return str(data)
+
+
+def _response_json_or_text(response: Any) -> Any:
+    try:
+        data = response.json()
+        if isinstance(data, (dict, list)):
+            return data
+    except Exception:
+        pass
+    raw = getattr(response, "text", "") or ""
+    if not raw and getattr(response, "content", None) is not None:
+        try:
+            raw = bytes(getattr(response, "content") or b"").decode("utf-8", errors="replace")
+        except Exception:
+            raw = ""
+    try:
+        return json.loads(raw or "{}")
+    except Exception:
+        return {"output": raw}
+
+
+def _payload_requests_tool_call(payload: dict[str, Any]) -> bool:
+    tools = payload.get("tools")
+    functions = payload.get("functions")
+    has_tools = isinstance(tools, list) and bool(tools)
+    has_functions = isinstance(functions, list) and bool(functions)
+    if not has_tools and not has_functions:
+        return False
+    tool_choice = _safe_text(payload.get("tool_choice")).lower()
+    function_call = _safe_text(payload.get("function_call")).lower()
+    # 显式禁用工具时按普通聊天处理；否则 OpenAI 客户端会期待 tool_calls，Swarms hosted API 实测不会返回。
+    return tool_choice != "none" and function_call != "none"
 
 
 class SwarmsTwoAPIPlugin:
@@ -459,60 +633,188 @@ class SwarmsTwoAPIPlugin:
         return self._models_catalog_response(model_ids)
 
     def forward_models(self) -> Any:
+        # 不直接透传 /models/available：该接口会返回 1000+ 混合模型，很多对
+        # chat/completions 是 200 空内容。2API 只展示已验证的聊天文本模型。
         if not self.accounts:
             self.load_accounts()
-        last_error: Exception | None = None
-        attempts = max(1, min(int(self.settings.max_retries or 1), max(len(self.accounts), 1)))
-        for _ in range(attempts):
-            try:
-                account = self.select_account()
-            except Exception as exc:
-                last_error = exc
-                break
-            for suffix in ("models/available", "models"):
-                try:
-                    response = self.transport.get(
-                        f"{account.base_url}/{suffix}",
-                        headers=self._headers(account),
-                        timeout=min(8.0, float(self.settings.request_timeout or 8.0)),
-                    )
-                    catalog = self._available_models_response_to_openai_catalog(response)
-                    if catalog is not None:
-                        account.last_status = "models_alive"
-                        return catalog
-                    if self._models_response_is_openai_catalog(response):
-                        account.last_status = "models_alive"
-                        return response
-                    last_error = RuntimeError(f"{suffix}_invalid:{getattr(response, 'status_code', 0)}")
-                except Exception as exc:
-                    last_error = exc
-                    account.last_error = repr(exc)
-                    self.log(f"Swarms {suffix} 探测失败: {account.email} {exc!r}")
-        self.log(f"Swarms models 上游不可用，返回本地模型目录: {last_error!r}")
         return self._local_models_response()
+
+    def _swarm_completions_url(self, account: TwoAPIAccount) -> str:
+        base_url = _normalize_base_url(account.base_url).rstrip("/")
+        if base_url.endswith("/v1"):
+            return f"{base_url}/swarm/completions"
+        return f"{base_url}/v1/swarm/completions"
+
+    def _build_swarm_payload(self, payload: dict[str, Any], *, stream: bool = False) -> dict[str, Any]:
+        model = _safe_text(payload.get("model")) or "gpt-4o"
+        system_prompt, task = _messages_to_system_and_task(payload.get("messages"))
+        if not task:
+            task = _safe_text(payload.get("prompt")) or " "
+        max_tokens = _safe_int(payload.get("max_tokens"), SWARMS_DEFAULT_MAX_TOKENS) or SWARMS_DEFAULT_MAX_TOKENS
+        temperature = _safe_float(payload.get("temperature"), SWARMS_DEFAULT_TEMPERATURE)
+        return {
+            "name": SWARMS_AGENT_NAME,
+            "description": SWARMS_AGENT_DESCRIPTION,
+            "swarm_type": SWARMS_DEFAULT_SWARM_TYPE,
+            "task": task,
+            "max_loops": 1,
+            "stream": bool(stream or payload.get("stream")),
+            "agents": [
+                {
+                    "agent_name": SWARMS_AGENT_NAME,
+                    "description": SWARMS_AGENT_DESCRIPTION,
+                    "system_prompt": system_prompt,
+                    "model_name": model,
+                    "max_tokens": max_tokens,
+                    "temperature": temperature,
+                    "role": "worker",
+                    "max_loops": 1,
+                    "auto_generate_prompt": False,
+                    "dynamic_temperature_enabled": True,
+                }
+            ],
+        }
+
+    def _openai_chat_payload(self, model: str, upstream_payload: Any) -> dict[str, Any]:
+        usage_raw = upstream_payload.get("usage", {}) if isinstance(upstream_payload, dict) else {}
+        return {
+            "id": f"chatcmpl-swarms-{int(time.time() * 1000)}",
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": model,
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": _extract_swarms_output(upstream_payload)},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {
+                "prompt_tokens": _safe_int(usage_raw.get("input_tokens"), 0) if isinstance(usage_raw, dict) else 0,
+                "completion_tokens": _safe_int(usage_raw.get("output_tokens"), 0) if isinstance(usage_raw, dict) else 0,
+                "total_tokens": _safe_int(usage_raw.get("total_tokens"), 0) if isinstance(usage_raw, dict) else 0,
+            },
+        }
+
+    def _sse_chunk(self, chat_id: str, model: str, delta: dict[str, Any], finish_reason: str | None = None) -> bytes:
+        payload = {
+            "id": chat_id,
+            "object": "chat.completion.chunk",
+            "created": int(time.time()),
+            "model": model,
+            "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
+        }
+        return ("data: " + json.dumps(payload, ensure_ascii=False) + "\n\n").encode("utf-8")
+
+    def _iter_swarms_sse_events(self, upstream: Any):
+        event_type = "message"
+        data_lines: list[str] = []
+
+        def flush():
+            nonlocal event_type, data_lines
+            if not data_lines:
+                event_type = "message"
+                return None
+            raw = "\n".join(data_lines).strip()
+            event = event_type or "message"
+            event_type = "message"
+            data_lines = []
+            return event, raw
+
+        iterator = getattr(upstream, "iter_lines", None)
+        if callable(iterator):
+            source = iterator(decode_unicode=True)
+        else:
+            source = str(getattr(upstream, "text", "") or "").splitlines()
+        for raw_line in source:
+            line = raw_line.decode("utf-8", errors="replace") if isinstance(raw_line, bytes) else str(raw_line or "")
+            if not line:
+                item = flush()
+                if item:
+                    yield item
+                continue
+            if line.startswith("event:"):
+                event_type = line.split(":", 1)[1].strip() or "message"
+            elif line.startswith("data:"):
+                data_lines.append(line.split(":", 1)[1].strip())
+        item = flush()
+        if item:
+            yield item
+
+    def _openai_stream_response_from_swarms(self, model: str, upstream: Any) -> StreamingSSEOpenAIResponse:
+        chat_id = f"chatcmpl-swarms-{int(time.time() * 1000)}"
+
+        def chunks():
+            emitted = ""
+            yield self._sse_chunk(chat_id, model, {"role": "assistant"})
+            try:
+                for event, raw in self._iter_swarms_sse_events(upstream):
+                    if event == "error":
+                        if raw:
+                            yield self._sse_chunk(chat_id, model, {"content": raw}, "stop")
+                        yield b"data: [DONE]\n\n"
+                        return
+                    if event not in {"chunk", "message"} or not raw:
+                        continue
+                    try:
+                        content_full = _extract_swarms_output(json.loads(raw))
+                    except Exception:
+                        content_full = raw
+                    if not content_full:
+                        continue
+                    delta = content_full[len(emitted):] if content_full.startswith(emitted) else content_full
+                    emitted = content_full if content_full.startswith(emitted) else emitted + delta
+                    if delta:
+                        yield self._sse_chunk(chat_id, model, {"content": delta})
+            except GeneratorExit:
+                raise
+            except Exception as exc:
+                yield self._sse_chunk(chat_id, model, {"content": f"\n[Swarms stream error: {exc}]"}, "stop")
+                yield b"data: [DONE]\n\n"
+                return
+            yield self._sse_chunk(chat_id, model, {}, "stop")
+            yield b"data: [DONE]\n\n"
+
+        return StreamingSSEOpenAIResponse(chunks, upstream=upstream)
 
     def forward_chat(self, payload: dict[str, Any], *, stream: bool = False) -> Any:
         if not isinstance(payload, dict):
             raise RuntimeError("OpenAI payload 必须是 JSON object")
+        if _payload_requests_tool_call(payload):
+            return LocalJSONResponse(
+                {
+                    "error": {
+                        "message": "Swarms hosted API 当前不支持 OpenAI tools/function calling 透传；请移除 tools/functions 或设置 tool_choice/function_call 为 none。",
+                        "type": "unsupported_feature",
+                        "code": "swarms_tools_unsupported",
+                    }
+                },
+                status_code=400,
+            )
         if not self.accounts:
             self.load_accounts()
         attempts = max(1, max(int(self.settings.max_retries or 1), len(self.accounts)))
         last_error: Exception | None = None
         last_response: Any | None = None
+        model = _safe_text(payload.get("model")) or "gpt-4o"
         for _ in range(attempts):
             account = self.select_account()
             try:
                 response = self.transport.post(
-                    f"{account.base_url}/chat/completions",
+                    self._swarm_completions_url(account),
                     headers=self._headers(account, stream=stream),
-                    json=payload,
+                    json=self._build_swarm_payload(payload, stream=stream),
                     timeout=self.settings.request_timeout,
                     stream=stream,
                 )
                 status = int(getattr(response, "status_code", 200) or 200)
                 if getattr(response, "ok", False) or status < 500:
                     account.last_status = "chat_alive" if status < 400 else f"chat_error:{status}"
-                    return response
+                    if status >= 400:
+                        return response
+                    if stream:
+                        return self._openai_stream_response_from_swarms(model, response)
+                    return LocalJSONResponse(self._openai_chat_payload(model, _response_json_or_text(response)))
                 last_response = response
                 account.last_status = f"chat_retryable_error:{status}"
                 self.log(f"Swarms chat 可重试错误: {account.email} status={status}")

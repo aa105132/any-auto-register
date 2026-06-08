@@ -73,6 +73,21 @@ class ResinProxyTests(unittest.TestCase):
         self.assertEqual(result["source"], "legacy_url")
         self.assertEqual(result["proxy_url"], "http://legacy-user:legacy-pass@127.0.0.1:2260")
 
+
+    def test_resolve_legacy_url_appends_session_account_to_username(self):
+        result = resolve_resin_proxy_config(
+            {
+                "resin_enabled": "true",
+                "resin_proxy_url": "http://Default:my-token@127.0.0.1:2260",
+            },
+            task_platform="swarms",
+            account="vs7",
+            require_enabled=True,
+        )
+
+        self.assertEqual(result["source"], "legacy_url")
+        self.assertEqual(result["proxy_url"], "http://Default.vs7:my-token@127.0.0.1:2260")
+
     def test_resolve_returns_none_when_disabled_and_required(self):
         result = resolve_resin_proxy_config(
             {

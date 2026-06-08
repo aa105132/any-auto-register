@@ -45,6 +45,6 @@ COPY --from=frontend-builder /app/static ./static
 COPY docker-entrypoint.sh /docker-entrypoint.sh
 RUN chmod +x /docker-entrypoint.sh
 
-EXPOSE 8000 6080
+EXPOSE 8899 6080
 
 ENTRYPOINT ["/docker-entrypoint.sh"]

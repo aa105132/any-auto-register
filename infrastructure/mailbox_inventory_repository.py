@@ -9,6 +9,7 @@ from application.mailbox_inventory_support import (
     OUTLOOK_TOKEN_PROVIDER_KEY,
     build_outlook_alias_inventory_entry,
     inventory_platform_already_used,
+    is_mailbox_domain_blacklisted,
     parse_mailbox_inventory_import_lines,
     resolve_inventory_registration_success,
     resolve_inventory_timeout_result,
@@ -65,6 +66,8 @@ class MailboxInventoryRepository:
                     and not include_outlook_aliases
                     and _is_outlook_alias_inventory_item(item.email, metadata)
                 ):
+                    continue
+                if is_mailbox_domain_blacklisted(item.email):
                     continue
                 available += 1
             return available
@@ -166,6 +169,8 @@ class MailboxInventoryRepository:
                 ):
                     continue
                 if inventory_platform_already_used(normalized_provider, metadata, str(platform or "")):
+                    continue
+                if is_mailbox_domain_blacklisted(item.email, platform=str(platform or "")):
                     continue
                 item.status = "running"
                 item.last_task_id = str(task_id or "")

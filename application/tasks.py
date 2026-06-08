@@ -27,6 +27,7 @@ from application.account_import_parser import parse_account_import_lines
 from application.mailbox_inventory_support import (
     build_mailbox_inventory_seed,
     inventory_provider_label,
+    resolve_inventory_register_failure,
     supports_mailbox_inventory,
 )
 from core.account_graph import patch_account_graph
@@ -1706,6 +1707,132 @@ def _auto_export_swarms_key(task_logger: TaskLogger, account) -> None:
     except Exception as exc:
         task_logger.log(f"  [Swarms] API key write failed: {exc}", level="warning")
 
+
+def _build_anycap_twoapi_record_from_account(account: Any, *, source: str = "registration") -> dict[str, Any]:
+    if str(getattr(account, "platform", "") or "").strip().lower() != "anycap":
+        return {}
+    extra = dict(getattr(account, "extra", {}) or {})
+    api_key = str(extra.get("api_key") or extra.get("ai_api_token") or getattr(account, "token", "") or "").strip()
+    if not api_key:
+        return {}
+    record: dict[str, Any] = {
+        "email": str(getattr(account, "email", "") or extra.get("email", "") or "").strip(),
+        "password": str(getattr(account, "password", "") or extra.get("password", "") or ""),
+        "user_id": str(getattr(account, "user_id", "") or extra.get("user_id") or ""),
+        "api_key": api_key,
+        "ai_api_token": api_key,
+        "base_url": str(extra.get("native_api_base") or extra.get("api_base") or "https://api.anycap.ai").strip(),
+        "native_api_base": str(extra.get("native_api_base") or extra.get("api_base") or "https://api.anycap.ai").strip(),
+        "credit_amount": float(extra.get("credit_amount") or 100.0),
+        "native_anycap": True,
+        "ok": True,
+        "source": str(source or "registration"),
+        "import_source": str(source or "registration"),
+        "saved_at": int(time.time()),
+    }
+    for key in ("api_key_info", "access_token", "profile", "cookies", "cookie_header", "api_verification", "account_overview"):
+        value = extra.get(key)
+        if value not in (None, "", {}, []):
+            record[key] = value
+    return record if record.get("email") else {}
+
+
+def _auto_push_anycap_twoapi(task_logger: TaskLogger, account, task_extra: dict[str, Any] | None = None) -> None:
+    if str(getattr(account, "platform", "") or "").strip().lower() != "anycap":
+        return
+    extra = dict(task_extra or {})
+    mode = str(extra.get("twoapi_push_mode") or "none").strip().lower()
+    if mode in {"", "none", "off", "disabled", "false", "0"}:
+        return
+    if mode not in {"local", "remote"}:
+        task_logger.log(f"  [AnyCap2API] 未知推送模式: {mode}", level="warning")
+        return
+    record = _build_anycap_twoapi_record_from_account(account, source=f"registration-{mode}")
+    if not record:
+        task_logger.log("  [AnyCap2API] 没有可导入的 AnyCap 账号记录", level="warning")
+        return
+    try:
+        from services.twoapi.manager import get_twoapi_manager
+
+        manager = get_twoapi_manager()
+        if mode == "local":
+            result = manager.import_plugin_accounts("anycap", records=[record], source="registration-local")
+            imported = result.get("imported", result.get("created", 0))
+            updated = result.get("updated", 0)
+            task_logger.log(f"  [AnyCap2API] 本地导入完成: imported={imported} updated={updated}")
+            return
+        target_url = str(extra.get("twoapi_push_target_url") or "").strip()
+        if not target_url:
+            task_logger.log("  [AnyCap2API] 远端推送已跳过: 未填写远端 2API 后端地址", level="warning")
+            return
+        plugin = manager.get_plugin("anycap")
+        import_url = plugin._push_target_import_url(target_url)
+        response = plugin.transport.post(
+            import_url,
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            json={"source": "registration-remote", "records": [record]},
+            timeout=max(1.0, float(extra.get("twoapi_push_timeout") or 30.0)),
+        )
+        try:
+            data = response.json()
+        except Exception:
+            data = {"raw": str(getattr(response, "text", "") or "")[:500]}
+        if not getattr(response, "ok", False):
+            raise RuntimeError(f"status={getattr(response, 'status_code', 0)} body={str(data)[:300]}")
+        task_logger.log(f"  [AnyCap2API] 远端推送完成: pushed=1 target={import_url}")
+    except Exception as exc:
+        task_logger.log(f"  [AnyCap2API] 自动推送异常: {exc}", level="warning")
+
+
+def _auto_export_anycap_key(task_logger: TaskLogger, account) -> None:
+    if getattr(account, "platform", "") != "anycap":
+        return
+    extra = account.extra or {}
+    api_key = str(extra.get("api_key", "") or extra.get("ai_api_token", "") or account.token or "").strip()
+    if not api_key:
+        task_logger.log("  [AnyCap] 没有可导出的 API key", level="warning")
+        return
+    try:
+        from pathlib import Path
+        import json
+
+        output_dir = Path("output")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        keys_path = output_dir / "anycap_keys.txt"
+        credentials_path = output_dir / "anycap_credentials.json"
+
+        with keys_path.open("a", encoding="utf-8") as handle:
+            handle.write(f"{getattr(account, 'email', '')}|{api_key}\n")
+
+        try:
+            existing = json.loads(credentials_path.read_text(encoding="utf-8")) if credentials_path.exists() else []
+        except Exception:
+            existing = []
+        rows = [item for item in existing if isinstance(item, dict)] if isinstance(existing, list) else []
+        rows.append({
+            "email": getattr(account, "email", "") or "anycap-auto@local",
+            "password": getattr(account, "password", "") or "",
+            "user_id": getattr(account, "user_id", "") or str(extra.get("user_id", "") or ""),
+            "api_key": api_key,
+            "ai_api_token": api_key,
+            "source": "registration_auto_export",
+            "native_api_base": "https://api.anycap.ai",
+            "credit_amount": 100.0,
+            "ok": True,
+        })
+        deduped = []
+        seen = set()
+        for row in rows:
+            key = str(row.get("api_key") or row.get("ai_api_token") or row.get("token") or "").strip()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            deduped.append(row)
+        credentials_path.write_text(json.dumps(deduped, ensure_ascii=False, indent=2), encoding="utf-8")
+        task_logger.log(f"  [AnyCap] API key saved to {credentials_path}")
+    except Exception as exc:
+        task_logger.log(f"  [AnyCap] API key write failed: {exc}", level="warning")
+
 def _auto_export_featherless_key(task_logger: TaskLogger, account) -> None:
     if getattr(account, "platform", "") != "featherless":
         return
@@ -1749,6 +1876,48 @@ def _auto_export_jiekou_key(task_logger: TaskLogger, account) -> None:
     except Exception as exc:
         task_logger.log(f"  [Jiekou] API key write failed: {exc}", level="warning")
 
+
+
+def _probe_proxy_ip(proxy_url: str) -> str:
+    import requests as _req
+    proxies = {"http": proxy_url, "https": proxy_url}
+    for url in ("https://api.ipify.org", "https://ifconfig.me/ip", "https://ip.decodo.com/json", "https://httpbin.org/ip"):
+        try:
+            resp = _req.get(url, proxies=proxies, timeout=10)
+            text = resp.text.strip()
+            if "origin" in text:
+                import json as _json
+                text = _json.loads(text).get("origin", "").split(",")[0].strip()
+            if "ip" in text[:5] and "{" in text:
+                import json as _json
+                text = _json.loads(text).get("ip", "").strip()
+            if text and "." in text:
+                return text
+        except Exception:
+            continue
+    return ""
+
+
+def _probe_swarms_signup_page(proxy_url: str) -> bool:
+    """用同一个代理探测 Swarms 注册页，IP 探测通过不代表目标站 CONNECT 可用。"""
+    if not proxy_url:
+        return True
+    import requests as _req
+
+    proxies = {"http": proxy_url, "https": proxy_url}
+    try:
+        resp = _req.get(
+            "https://swarms.world/signin/signup",
+            proxies=proxies,
+            timeout=15,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            },
+        )
+        return int(getattr(resp, "status_code", 0) or 0) < 400 and "signin" in str(getattr(resp, "url", "") or "signin")
+    except Exception:
+        return False
 
 
 def _get_resin_proxy_url(task_platform: str = "", account: str = "") -> str | None:
@@ -2035,25 +2204,6 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
         if pending_ids:
             inventory_repository.reset_many(pending_ids, note=note)
 
-    def _probe_resin_ip(proxy_url: str) -> str:
-        import requests as _req
-        proxies = {"http": proxy_url, "https": proxy_url}
-        for url in ("https://api.ipify.org", "https://ifconfig.me/ip", "https://ip.decodo.com/json", "https://httpbin.org/ip"):
-            try:
-                resp = _req.get(url, proxies=proxies, timeout=10)
-                text = resp.text.strip()
-                if "origin" in text:
-                    import json as _json
-                    text = _json.loads(text).get("origin", "").split(",")[0].strip()
-                if "ip" in text[:5] and "{" in text:
-                    import json as _json
-                    text = _json.loads(text).get("ip", "").strip()
-                if text and "." in text:
-                    return text
-            except Exception:
-                continue
-        return ""
-
     def _pick_resin_proxy_with_ip_check() -> tuple[str | None, int, str]:
         max_attempts = 20
         for _ in range(max_attempts):
@@ -2064,7 +2214,7 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
             proxy_url = _get_resin_proxy_url(platform_name, account=account)
             if not proxy_url:
                 return None, -1, ""
-            ip = _probe_resin_ip(proxy_url)
+            ip = _probe_proxy_ip(proxy_url)
             if not ip:
                 logger.log(f"Resin slot vs{slot}: IP probe failed, skipping")
                 continue
@@ -2231,7 +2381,7 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
         logger.log(f"BrightData: exhausted {max_attempts} slots, no clean IP found", level="warning")
         return None, -1, ""
 
-    def _resolve_task_proxy() -> tuple[str | None, str, str]:
+    def _resolve_task_proxy(worker_index: int = 0) -> tuple[str | None, str, str]:
         if proxy:
             logger.log("代理来源: 任务内代理")
             return proxy, "payload", ""
@@ -2240,8 +2390,25 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
             if platform_name == "venice":
                 resin_proxy, _slot, resin_ip = _pick_resin_proxy_with_ip_check()
             else:
-                resin_proxy, resin_ip = _get_resin_proxy_url(platform_name), ""
+                resin_proxy, resin_ip = None, ""
+                max_resin_attempts = 8 if platform_name == "swarms" else 1
+                for attempt in range(max_resin_attempts):
+                    # Swarms 对同一 Resin 会话/IP 限制明显；无论是否并发都使用独立 session 用户名 Default.vsN，
+                    # 并在注册前直连目标注册页预检，避免 api.ipify 可用但 swarms.world CONNECT 504。
+                    resin_account = f"vs{worker_index + attempt}" if platform_name == "swarms" else ""
+                    candidate_proxy = _get_resin_proxy_url(platform_name, account=resin_account)
+                    candidate_ip = _probe_proxy_ip(candidate_proxy) if candidate_proxy else ""
+                    if candidate_proxy and not candidate_ip:
+                        logger.log("Resin IP probe failed, skipping", level="warning")
+                        continue
+                    if platform_name == "swarms" and candidate_proxy and not _probe_swarms_signup_page(candidate_proxy):
+                        logger.log(f"Swarms 注册页预检失败，跳过 Resin session {resin_account or 'Default'}", level="warning")
+                        continue
+                    resin_proxy, resin_ip = candidate_proxy, candidate_ip
+                    break
             if resin_proxy:
+                if resin_ip:
+                    logger.log(f"Resin IP {resin_ip}")
                 logger.log("代理来源: Resin")
                 return resin_proxy, "resin", resin_ip
         if _is_truthy_config(config_store.get("decodo_enabled", "false")):
@@ -2366,7 +2533,7 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
         }
         resolved_proxy, proxy_source, resin_ip = None, "", ""
         try:
-            resolved_proxy, proxy_source, resin_ip = _resolve_task_proxy()
+            resolved_proxy, proxy_source, resin_ip = _resolve_task_proxy(index)
             platform = _build_platform_instance(platform_name, seed_payload, logger, resolved_proxy=resolved_proxy)
             display_email = email or "(auto)"
             logger.log(f"开始注册第 {index + 1}/{count} 个账号: {display_email}")
@@ -2437,7 +2604,9 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
             _auto_export_zo_key(logger, account)
             _auto_push_zo_twoapi(logger, account, extra)
             _auto_push_swarms_twoapi(logger, account, extra)
+            _auto_push_anycap_twoapi(logger, account, extra)
             _auto_export_swarms_key(logger, account)
+            _auto_export_anycap_key(logger, account)
             _auto_export_featherless_key(logger, account)
             _auto_export_jiekou_key(logger, account)
             cashier_url = (account.extra or {}).get("cashier_url", "")
@@ -2457,7 +2626,8 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
             if resolved_proxy and proxy_source == "pool":
                 proxy_pool.report_fail(resolved_proxy)
             result = getattr(exc, "result", None)
-            persist_email = str(email or getattr(result, "email", "") or "").strip()
+            # 并发注册时异常对象可能携带其它 worker 的结果/邮箱；失败归档必须优先使用当前 worker 的邮箱。
+            persist_email = str(email or "").strip() or str(getattr(result, "email", "") or "").strip()
             reserved_google_email = str(extra.get("_reserved_google_pool_email") or persist_email or "").strip()
             if reserved_google_email and str(extra.get("oauth_account_source") or "").strip().lower() in {"mailbox", "mail_provider", "provider"}:
                 try:
@@ -2505,14 +2675,23 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
                             level="warning",
                         )
                 else:
+                    failure_result = resolve_inventory_register_failure(
+                        inventory_provider_key,
+                        inventory_metadata,
+                        registered_email=persist_email or email or "",
+                        platform=platform_name,
+                        error=error,
+                    )
+                    failure_metadata = dict(failure_result.get("metadata") or {})
+                    failure_metadata.update(metadata_updates)
                     inventory_repository.update_item(
                         inventory_item_id,
-                        status=lifecycle_status,
-                        note=persist_email or email or "",
+                        status=str(failure_result.get("status") or lifecycle_status),
+                        note=str(failure_result.get("note") or persist_email or email or ""),
                         last_error=error,
                         task_id=logger.task_id,
                         platform=platform_name,
-                        metadata_updates=metadata_updates,
+                        metadata_updates=failure_metadata,
                     )
                 _mark_inventory_processed(inventory_item_id)
             logger.record_error(error)

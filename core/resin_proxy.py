@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, unquote, urlsplit
 
 from core.proxy_utils import normalize_proxy_url
 
@@ -58,6 +58,12 @@ def _normalize_port(value: Any) -> str:
     return str(port)
 
 
+def _format_proxy_host(host: str) -> str:
+    if ":" in host and not host.startswith("["):
+        return f"[{host}]"
+    return host
+
+
 def _build_proxy_url(scheme: str, host: str, port: str, username: str, token: str) -> str:
     auth = ""
     if username:
@@ -67,7 +73,27 @@ def _build_proxy_url(scheme: str, host: str, port: str, username: str, token: st
         auth += "@"
     elif token:
         auth = f":{quote(token, safe='')}@"
-    return f"{scheme}://{auth}{host}:{port}"
+    return f"{scheme}://{auth}{_format_proxy_host(host)}:{port}"
+
+
+def _append_account_to_legacy_proxy_username(proxy_url: str | None, account: str) -> str | None:
+    normalized = normalize_proxy_url(proxy_url, default_scheme="http")
+    account_id = str(account or "").strip()
+    if not normalized or not account_id:
+        return normalized
+
+    parsed = urlsplit(normalized)
+    username = unquote(parsed.username or "")
+    if not username:
+        return normalized
+
+    suffix = f".{account_id}"
+    if not username.endswith(suffix):
+        username = f"{username}{suffix}"
+    password = unquote(parsed.password or "")
+    host = parsed.hostname or ""
+    port = str(parsed.port or "")
+    return _build_proxy_url(parsed.scheme or "http", host, port, username, password)
 
 
 def resolve_resin_proxy_config(
@@ -116,7 +142,7 @@ def resolve_resin_proxy_config(
         return {
             "enabled": enabled,
             "source": "legacy_url",
-            "proxy_url": normalize_proxy_url(legacy_url, default_scheme="http"),
+            "proxy_url": _append_account_to_legacy_proxy_username(legacy_url, account_id),
             "resolved_platform": resolved_platform,
             "scheme": scheme,
             "host": host,

@@ -13,6 +13,7 @@ from services.twoapi.server_runtime import twoapi_server_runtime
 management_router = APIRouter(prefix="/2api", tags=["2api"])
 proxy_router = APIRouter(prefix="/zo/v1", tags=["2api-proxy"])
 swarms_proxy_router = APIRouter(prefix="/swarms/v1", tags=["2api-proxy"])
+anycap_proxy_router = APIRouter(prefix="/anycap/v1", tags=["2api-proxy"])
 
 
 class TwoAPIKeyCreateRequest(BaseModel):
@@ -454,6 +455,69 @@ async def swarms_chat_with_token(path_token: str, request: Request, authorizatio
         want_stream = bool(payload.get("stream")) if isinstance(payload, dict) else False
         upstream = get_twoapi_manager().get_plugin("swarms").forward_chat(payload, stream=want_stream)
         return _response_from_upstream(upstream, stream=want_stream)
+    except HTTPException as exc:
+        return _handle_http_exception(exc)
+    except Exception as exc:
+        return _openai_error(str(exc), status_code=503, code="no_available_account")
+
+
+
+@anycap_proxy_router.get("/status")
+def anycap_status(authorization: str = Header(default="")):
+    try:
+        _require_key(authorization=authorization, plugin="anycap")
+        upstream = get_twoapi_manager().get_plugin("anycap").local_status()
+        return _response_from_upstream(upstream)
+    except HTTPException as exc:
+        return _handle_http_exception(exc)
+    except Exception as exc:
+        return _openai_error(str(exc), status_code=503, code="no_available_account")
+
+
+@anycap_proxy_router.get("/{capability}/models")
+def anycap_models(capability: str, authorization: str = Header(default="")):
+    try:
+        _require_key(authorization=authorization, plugin="anycap")
+        upstream = get_twoapi_manager().get_plugin("anycap").models(capability)
+        return _response_from_upstream(upstream)
+    except HTTPException as exc:
+        return _handle_http_exception(exc)
+    except Exception as exc:
+        return _openai_error(str(exc), status_code=503, code="no_available_account")
+
+
+@anycap_proxy_router.get("/{capability}/models/{model}/schema")
+def anycap_model_schema(capability: str, model: str, mode: str = "", authorization: str = Header(default="")):
+    try:
+        _require_key(authorization=authorization, plugin="anycap")
+        upstream = get_twoapi_manager().get_plugin("anycap").schema(capability, model, mode=mode)
+        return _response_from_upstream(upstream)
+    except HTTPException as exc:
+        return _handle_http_exception(exc)
+    except Exception as exc:
+        return _openai_error(str(exc), status_code=503, code="no_available_account")
+
+
+@anycap_proxy_router.post("/{capability}/generate")
+async def anycap_generate(capability: str, request: Request, authorization: str = Header(default="")):
+    try:
+        _require_key(authorization=authorization, plugin="anycap")
+        payload = await request.json()
+        upstream = get_twoapi_manager().get_plugin("anycap").forward_generate(capability, payload)
+        return _response_from_upstream(upstream)
+    except HTTPException as exc:
+        return _handle_http_exception(exc)
+    except Exception as exc:
+        return _openai_error(str(exc), status_code=503, code="no_available_account")
+
+
+@anycap_proxy_router.post("/capabilities/{capability}/read")
+async def anycap_capability_read(capability: str, request: Request, authorization: str = Header(default="")):
+    try:
+        _require_key(authorization=authorization, plugin="anycap")
+        payload = await request.json()
+        upstream = get_twoapi_manager().get_plugin("anycap").forward_capability_read(capability, payload)
+        return _response_from_upstream(upstream)
     except HTTPException as exc:
         return _handle_http_exception(exc)
     except Exception as exc:

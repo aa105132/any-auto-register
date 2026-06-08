@@ -175,6 +175,47 @@ def resolve_inventory_timeout_result(
     }
 
 
+def resolve_inventory_register_failure(
+    provider_key: str,
+    metadata: dict | None,
+    *,
+    registered_email: str = "",
+    platform: str = "",
+    error: str = "",
+) -> dict:
+    """根据邮箱池 provider 决定普通注册失败后的库存状态。
+
+    Outlook token 邮箱是长期资产：Swarms 代理 504、站点 24h 限流、注册接口失败等
+    都只说明本次注册失败，不代表 Outlook 邮箱本身失效，必须回收到 unused。
+    """
+    normalized = str(provider_key or "").strip()
+    current_metadata = dict(metadata or {})
+    if registered_email:
+        current_metadata["remote_email"] = str(registered_email)
+    normalized_platform = str(platform or "").strip()
+    if normalized_platform:
+        current_metadata["last_failed_platform"] = normalized_platform
+    error_text = str(error or "")
+    if error_text:
+        current_metadata["last_register_error"] = error_text[:500]
+        current_metadata["last_register_failed_at"] = _utcnow_iso()
+
+    if normalized == OUTLOOK_TOKEN_PROVIDER_KEY:
+        current_metadata.pop("blacklist_reason", None)
+        current_metadata.pop("blacklisted_at", None)
+        return {
+            "status": "unused",
+            "note": "注册失败，但 Outlook 邮箱仍可复用，已回收到邮箱池",
+            "metadata": current_metadata,
+        }
+
+    return {
+        "status": "register_failed",
+        "note": registered_email or "注册失败",
+        "metadata": current_metadata,
+    }
+
+
 def build_outlook_alias_inventory_entry(parent_item: dict, *, alias_email: str, platform: str = "") -> dict:
     """构建 Outlook 别名邮箱池条目。
 
@@ -353,3 +394,66 @@ def _utcnow_iso() -> str:
     from datetime import datetime, timezone
 
     return datetime.now(timezone.utc).isoformat()
+
+
+def mailbox_domain(email: str) -> str:
+    raw = str(email or "").strip().lower()
+    return raw.rsplit("@", 1)[1] if "@" in raw else ""
+
+
+def get_mailbox_domain_blacklist_path() -> str:
+    from pathlib import Path
+    return str(Path(__file__).resolve().parents[1] / "output" / "mailbox_domain_blacklist.json")
+
+
+def load_mailbox_domain_blacklist() -> dict:
+    import json
+    from pathlib import Path
+    path = Path(get_mailbox_domain_blacklist_path())
+    if not path.exists():
+        return {"domains": {}}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8") or "{}")
+    except Exception:
+        return {"domains": {}}
+    return data if isinstance(data, dict) else {"domains": {}}
+
+
+def is_mailbox_domain_blacklisted(email: str, *, platform: str = "") -> bool:
+    domain = mailbox_domain(email)
+    if not domain:
+        return False
+    data = load_mailbox_domain_blacklist()
+    domains = data.get("domains") if isinstance(data.get("domains"), dict) else {}
+    item = domains.get(domain) if isinstance(domains, dict) else None
+    if not isinstance(item, dict):
+        return False
+    platforms = [str(x or "").strip() for x in item.get("platforms") or [] if str(x or "").strip()]
+    return not platforms or not platform or platform in platforms
+
+
+def add_mailbox_domain_blacklist(email: str, *, platform: str = "", reason: str = "") -> dict:
+    import json
+    from pathlib import Path
+    domain = mailbox_domain(email)
+    if not domain:
+        return load_mailbox_domain_blacklist()
+    path = Path(get_mailbox_domain_blacklist_path())
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = load_mailbox_domain_blacklist()
+    domains = data.get("domains") if isinstance(data.get("domains"), dict) else {}
+    item = domains.get(domain) if isinstance(domains.get(domain), dict) else {}
+    platforms = [str(x or "").strip() for x in item.get("platforms") or [] if str(x or "").strip()]
+    normalized_platform = str(platform or "").strip()
+    if normalized_platform and normalized_platform not in platforms:
+        platforms.append(normalized_platform)
+    item.update({
+        "domain": domain,
+        "reason": str(reason or "domain_not_allowed"),
+        "platforms": platforms,
+        "blacklisted_at": _utcnow_iso(),
+    })
+    domains[domain] = item
+    data["domains"] = domains
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    return data

@@ -39,10 +39,13 @@ class _FakeClient:
             "connection_token": "conn-1",
         }
 
-    def check_balance_via_connection(self, connection_token):
-        self.calls.append(("check_balance_via_connection", connection_token))
-        # chat.atxp.ai/api/balance returns {"balance": <number>}
-        return {"balance": 3.0}
+    def check_balance(self, privy_token, *, refresh_token=""):
+        self.calls.append(("check_balance", privy_token, refresh_token))
+        return {"balance": {"iou": "3", "usdc": "0"}}
+
+    def probe_gateway_connection(self, connection_string):
+        self.calls.append(("probe_gateway_connection", connection_string))
+        return {"success": True, "model": "gpt-4.1-mini", "model_count": 1, "checked_at": "2026-06-05T00:00:00Z"}
 
     def complete_clowdbot_tasks(self, privy_token, account_id, email):
         self.calls.append(("complete_clowdbot_tasks", privy_token, account_id, email))
@@ -80,7 +83,8 @@ class AtxpWorkerTests(unittest.TestCase):
                 ("send_privy_code", "demo@example.com", "ca-fixed-id"),
                 ("authenticate_privy", "demo@example.com", "123456", "ca-fixed-id"),
                 ("fetch_atxp_bundle", "privy-token"),
-                ("check_balance_via_connection", "conn-1"),
+                ("probe_gateway_connection", "https://accounts.atxp.ai?connection_token=conn-1&account_id=acct-1"),
+                ("check_balance", "privy-token", "refresh-token"),
             ],
         )
         self.assertEqual(result["account_id"], "acct-1")
@@ -94,30 +98,104 @@ class AtxpWorkerTests(unittest.TestCase):
         )
         self.assertEqual(result["clowdbot_status"], "skipped")
 
-    def test_worker_fails_when_balance_insufficient(self):
+    def test_worker_uses_accounts_balance_not_chat_balance(self):
         worker_cls = _load_attr(
             self,
             "platforms.atxp.protocol_mailbox",
             "AtxpProtocolMailboxWorker",
         )
 
-        class _PoorClient(_FakeClient):
-            def check_balance_via_connection(self, connection_token):
-                self.calls.append(("check_balance_via_connection", connection_token))
-                return {"balance": 0.0}
-
-        fake_client = _PoorClient()
+        fake_client = _FakeClient()
         worker = worker_cls(client=fake_client, log_fn=lambda _message: None)
 
         with patch("platforms.atxp.protocol_mailbox.uuid.uuid4", return_value="ca-fixed-id"):
-            with self.assertRaises(RuntimeError) as ctx:
-                worker.run(
-                    email="demo@example.com",
-                    password="mailbox-pass",
-                    otp_callback=lambda: "123456",
-                )
+            result = worker.run(
+                email="demo@example.com",
+                password="mailbox-pass",
+                otp_callback=lambda: "123456",
+            )
+
+        self.assertEqual(result["account_id"], "acct-1")
+        self.assertEqual(result["balance"], {"iou": "3", "usdc": "0"})
+        self.assertIn(("check_balance", "privy-token", "refresh-token"), fake_client.calls)
+        self.assertNotIn(("check_balance_via_connection", "conn-1"), fake_client.calls)
+
+    def test_worker_fails_when_accounts_balance_is_insufficient(self):
+        worker_cls = _load_attr(
+            self,
+            "platforms.atxp.protocol_mailbox",
+            "AtxpProtocolMailboxWorker",
+        )
+
+        class _PoorBalanceClient(_FakeClient):
+            def check_balance(self, privy_token, *, refresh_token=""):
+                self.calls.append(("check_balance", privy_token, refresh_token))
+                return {"balance": {"iou": "0", "usdc": "0"}}
+
+        fake_client = _PoorBalanceClient()
+        worker = worker_cls(client=fake_client, log_fn=lambda _message: None)
+
+        with self.assertRaises(RuntimeError) as ctx:
+            worker.run(
+                email="demo@example.com",
+                password="mailbox-pass",
+                otp_callback=lambda: "123456",
+            )
+
         self.assertIn("余额不足", str(ctx.exception))
         self.assertIn("$0.00", str(ctx.exception))
+
+    def test_worker_fails_when_gateway_reports_insufficient_balance(self):
+        worker_cls = _load_attr(
+            self,
+            "platforms.atxp.protocol_mailbox",
+            "AtxpProtocolMailboxWorker",
+        )
+
+        class _InsufficientGatewayClient(_FakeClient):
+            def probe_gateway_connection(self, connection_string):
+                self.calls.append(("probe_gateway_connection", connection_string))
+                raise RuntimeError(
+                    'ATXP gateway_402: payment_required; {"reason":"insufficient_balance"}'
+                )
+
+        fake_client = _InsufficientGatewayClient()
+        worker = worker_cls(client=fake_client, log_fn=lambda _message: None)
+
+        with self.assertRaises(RuntimeError) as ctx:
+            worker.run(
+                email="demo@example.com",
+                password="mailbox-pass",
+                otp_callback=lambda: "123456",
+            )
+
+        self.assertIn("insufficient_balance", str(ctx.exception))
+
+    def test_worker_fails_when_gateway_reports_account_restricted(self):
+        worker_cls = _load_attr(
+            self,
+            "platforms.atxp.protocol_mailbox",
+            "AtxpProtocolMailboxWorker",
+        )
+
+        class _RestrictedGatewayClient(_FakeClient):
+            def probe_gateway_connection(self, connection_string):
+                self.calls.append(("probe_gateway_connection", connection_string))
+                raise RuntimeError(
+                    'ATXP gateway_402: payment_required; {"reason":"account_restricted","message":"Your account is currently restricted."}'
+                )
+
+        fake_client = _RestrictedGatewayClient()
+        worker = worker_cls(client=fake_client, log_fn=lambda _message: None)
+
+        with self.assertRaises(RuntimeError) as ctx:
+            worker.run(
+                email="demo@example.com",
+                password="mailbox-pass",
+                otp_callback=lambda: "123456",
+            )
+
+        self.assertIn("account_restricted", str(ctx.exception))
 
     def test_worker_keeps_atxp_credentials_when_clowdbot_fails(self):
         worker_cls = _load_attr(
@@ -142,7 +220,8 @@ class AtxpWorkerTests(unittest.TestCase):
                 ("send_privy_code", "demo@example.com", "ca-fixed-id"),
                 ("authenticate_privy", "demo@example.com", "123456", "ca-fixed-id"),
                 ("fetch_atxp_bundle", "privy-token"),
-                ("check_balance_via_connection", "conn-1"),
+                ("probe_gateway_connection", "https://accounts.atxp.ai?connection_token=conn-1&account_id=acct-1"),
+                ("check_balance", "privy-token", "refresh-token"),
                 ("complete_clowdbot_tasks", "privy-token", "acct-1", "demo@example.com"),
             ],
         )

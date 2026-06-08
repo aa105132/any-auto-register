@@ -18,14 +18,19 @@ engine = create_engine(
     pool_pre_ping=True,
 )
 
-from sqlalchemy import event as _sa_event
+try:
+    from sqlalchemy import event as _sa_event
+except ImportError:  # 测试桩环境可能只提供最小 sqlalchemy 接口。
+    _sa_event = None
 
-@_sa_event.listens_for(engine, "connect")
-def _set_sqlite_pragma(dbapi_connection, connection_record):
-    cursor = dbapi_connection.cursor()
-    cursor.execute("PRAGMA journal_mode=WAL")
-    cursor.execute("PRAGMA busy_timeout=30000")
-    cursor.close()
+
+if _sa_event is not None:
+    @_sa_event.listens_for(engine, "connect")
+    def _set_sqlite_pragma(dbapi_connection, connection_record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA busy_timeout=30000")
+        cursor.close()
 
 
 class AccountModel(SQLModel, table=True):
@@ -350,6 +355,8 @@ def save_account(account) -> 'AccountModel':
             session.refresh(existing)
             sync_platform_account_graph(session, existing, account)
             session.commit()
+            session.refresh(existing)
+            session.expunge(existing)
             return existing
         m = AccountModel(
             platform=account.platform,
@@ -362,6 +369,8 @@ def save_account(account) -> 'AccountModel':
         session.refresh(m)
         sync_platform_account_graph(session, m, account)
         session.commit()
+        session.refresh(m)
+        session.expunge(m)
         return m
 
 

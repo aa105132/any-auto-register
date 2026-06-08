@@ -306,6 +306,102 @@ class VeniceTaskContextTests(unittest.TestCase):
             any("代理成功次数已达上限(3)" in message and "proxy-1" in message for message in logger.messages)
         )
 
+    def test_execute_register_task_probes_global_resin_proxy_for_swarms(self):
+        tasks = _import_tasks_module()
+        logger = _DummyTaskLogger()
+        payload = {
+            "platform": "swarms",
+            "count": 1,
+            "concurrency": 1,
+            "email": "demo@example.com",
+            "password": "pw",
+            "extra": {},
+        }
+        used_proxies: list[str | None] = []
+
+        class _DummyInventoryRepository:
+            def reset_many(self, *_args, **_kwargs):
+                return None
+
+        class _FakeProxyPool:
+            def __init__(self):
+                self.get_next_calls = 0
+                self.success_urls: list[str] = []
+                self.fail_urls: list[str] = []
+
+            def get_next(self, region: str = "", exclude_urls=None):
+                self.get_next_calls += 1
+                return "pool-proxy"
+
+            def report_success(self, url: str) -> None:
+                self.success_urls.append(url)
+
+            def report_fail(self, url: str) -> None:
+                self.fail_urls.append(url)
+
+        fake_proxy_pool = _FakeProxyPool()
+
+        class _FakePlatform:
+            def __init__(self, resolved_proxy: str | None):
+                self._resolved_proxy = resolved_proxy
+
+            def register(self, email=None, password=None):
+                used_proxies.append(self._resolved_proxy)
+                return types.SimpleNamespace(email="user@example.com", extra={})
+
+        def fake_build_platform_instance(_platform_name, _seed_payload, _logger, resolved_proxy=None):
+            return _FakePlatform(resolved_proxy)
+
+        def fake_config_get(key: str, default=""):
+            config = {
+                "resin_enabled": "true",
+                "resin_proxy_url": "http://Default:token@127.0.0.1:2260",
+            }
+            return config.get(key, default)
+
+        probe_calls: list[str] = []
+
+        def fake_probe(proxy_url: str) -> str:
+            probe_calls.append(proxy_url)
+            return "198.51.100.8"
+
+        with patch("core.proxy_pool.proxy_pool", fake_proxy_pool), patch.object(
+            tasks.config_store,
+            "get",
+            side_effect=fake_config_get,
+        ), patch.object(
+            tasks,
+            "_resolve_register_lines",
+            return_value=[None],
+        ), patch.object(tasks, "get", return_value=object()), patch.object(
+            tasks,
+            "_build_platform_instance",
+            side_effect=fake_build_platform_instance,
+        ), patch.object(tasks, "MailboxInventoryRepository", return_value=_DummyInventoryRepository()), patch.object(
+            tasks,
+            "save_account",
+            return_value=None,
+        ), patch.object(tasks, "_save_task_log", return_value=None), patch.object(
+            tasks,
+            "_auto_upload_cpa",
+            return_value=None,
+        ), patch.object(
+            tasks,
+            "_auto_import_codebanana2api",
+            return_value=None,
+        ), patch.object(tasks, "_probe_proxy_ip", side_effect=fake_probe), patch.object(
+            tasks,
+            "_probe_swarms_signup_page",
+            return_value=True,
+        ):
+            tasks._execute_register_task(payload, logger)
+
+        self.assertEqual(used_proxies, ["http://Default.vs0:token@127.0.0.1:2260"])
+        self.assertEqual(probe_calls, ["http://Default.vs0:token@127.0.0.1:2260"])
+        self.assertEqual(fake_proxy_pool.get_next_calls, 0)
+        self.assertTrue(any("Resin IP 198.51.100.8" in message for message in logger.messages))
+
+
     def test_execute_register_task_prefers_global_resin_proxy_over_proxy_pool(self):
         tasks = _import_tasks_module()
         logger = _DummyTaskLogger()
@@ -383,7 +479,7 @@ class VeniceTaskContextTests(unittest.TestCase):
             tasks,
             "_auto_import_codebanana2api",
             return_value=None,
-        ):
+        ), patch.object(tasks, "_probe_proxy_ip", return_value="198.51.100.8"):
             tasks._execute_register_task(payload, logger)
 
         self.assertEqual(used_proxies, ["http://Default:token@127.0.0.1:2260"])
@@ -1057,6 +1153,256 @@ class VeniceTaskContextTests(unittest.TestCase):
         self.assertEqual(parent_item["email"], "demo@outlook.com")
         self.assertEqual(parent_item["purchase_token"], "refresh-456")
         self.assertEqual(parent_item["metadata"]["client_id"], "client-123")
+
+
+
+    def test_execute_register_task_uses_distinct_resin_sessions_for_swarms_concurrency(self):
+        tasks = _import_tasks_module()
+        logger = _DummyTaskLogger()
+        payload = {
+            "platform": "swarms",
+            "count": 3,
+            "concurrency": 3,
+            "extra": {},
+        }
+        used_proxies: list[str | None] = []
+
+        class _DummyInventoryRepository:
+            def reset_many(self, *_args, **_kwargs):
+                return None
+
+        class _FakeProxyPool:
+            def get_next(self, region: str = "", exclude_urls=None):
+                return None
+
+            def report_success(self, url: str) -> None:
+                return None
+
+            def report_fail(self, url: str) -> None:
+                return None
+
+        class _FakePlatform:
+            def __init__(self, resolved_proxy: str | None):
+                self._resolved_proxy = resolved_proxy
+
+            def register(self, email=None, password=None):
+                used_proxies.append(self._resolved_proxy)
+                return types.SimpleNamespace(email=email or f"user{len(used_proxies)}@example.com", extra={})
+
+        def fake_build_platform_instance(_platform_name, _seed_payload, _logger, resolved_proxy=None):
+            return _FakePlatform(resolved_proxy)
+
+        def fake_config_get(key: str, default=""):
+            config = {
+                "resin_enabled": "true",
+                "resin_scheme": "http",
+                "resin_host": "127.0.0.1",
+                "resin_port": "2260",
+                "resin_token": "token-123",
+                "resin_default_platform": "Default",
+            }
+            return config.get(key, default)
+
+        with patch("core.proxy_pool.proxy_pool", _FakeProxyPool()), patch.object(
+            tasks.config_store,
+            "get",
+            side_effect=fake_config_get,
+        ), patch.object(tasks, "_resolve_register_lines", return_value=[None, None, None]), patch.object(
+            tasks,
+            "get",
+            return_value=object(),
+        ), patch.object(tasks, "MailboxInventoryRepository", return_value=_DummyInventoryRepository()), patch.object(
+            tasks,
+            "_build_platform_instance",
+            side_effect=fake_build_platform_instance,
+        ), patch.object(tasks, "_probe_proxy_ip", return_value="198.51.100.8"), patch.object(
+            tasks,
+            "_probe_swarms_signup_page",
+            return_value=True,
+        ), patch.object(
+            tasks,
+            "save_account",
+            return_value=None,
+        ), patch.object(tasks, "_save_task_log", return_value=None), patch.object(
+            tasks,
+            "_auto_upload_cpa",
+            return_value=None,
+        ), patch.object(tasks, "_auto_import_codebanana2api", return_value=None):
+            tasks._execute_register_task(payload, logger)
+
+        self.assertEqual(
+            sorted(used_proxies),
+            [
+                "http://Default.vs0:token-123@127.0.0.1:2260",
+                "http://Default.vs1:token-123@127.0.0.1:2260",
+                "http://Default.vs2:token-123@127.0.0.1:2260",
+            ],
+        )
+
+
+    def test_execute_register_task_skips_bad_swarms_resin_session_before_register(self):
+        tasks = _import_tasks_module()
+        logger = _DummyTaskLogger()
+        payload = {
+            "platform": "swarms",
+            "count": 1,
+            "concurrency": 1,
+            "email": "demo@example.com",
+            "password": "pw",
+            "extra": {},
+        }
+        used_proxies: list[str | None] = []
+        preflight_calls: list[str] = []
+
+        class _DummyInventoryRepository:
+            def reset_many(self, *_args, **_kwargs):
+                return None
+
+        class _FakeProxyPool:
+            def get_next(self, region: str = "", exclude_urls=None):
+                return None
+
+            def report_success(self, url: str) -> None:
+                return None
+
+            def report_fail(self, url: str) -> None:
+                return None
+
+        class _FakePlatform:
+            def __init__(self, resolved_proxy: str | None):
+                self._resolved_proxy = resolved_proxy
+
+            def register(self, email=None, password=None):
+                used_proxies.append(self._resolved_proxy)
+                return types.SimpleNamespace(email=email or "demo@example.com", extra={})
+
+        def fake_build_platform_instance(_platform_name, _seed_payload, _logger, resolved_proxy=None):
+            return _FakePlatform(resolved_proxy)
+
+        def fake_config_get(key: str, default=""):
+            config = {
+                "resin_enabled": "true",
+                "resin_scheme": "http",
+                "resin_host": "127.0.0.1",
+                "resin_port": "2260",
+                "resin_token": "token-123",
+                "resin_default_platform": "Default",
+            }
+            return config.get(key, default)
+
+        def fake_preflight(proxy_url: str) -> bool:
+            preflight_calls.append(proxy_url)
+            return proxy_url.endswith("Default.vs1:token-123@127.0.0.1:2260")
+
+        with patch("core.proxy_pool.proxy_pool", _FakeProxyPool()), patch.object(
+            tasks.config_store,
+            "get",
+            side_effect=fake_config_get,
+        ), patch.object(tasks, "_resolve_register_lines", return_value=[None]), patch.object(
+            tasks,
+            "get",
+            return_value=object(),
+        ), patch.object(tasks, "MailboxInventoryRepository", return_value=_DummyInventoryRepository()), patch.object(
+            tasks,
+            "_build_platform_instance",
+            side_effect=fake_build_platform_instance,
+        ), patch.object(tasks, "_probe_proxy_ip", return_value="198.51.100.8"), patch.object(
+            tasks,
+            "_probe_swarms_signup_page",
+            side_effect=fake_preflight,
+        ), patch.object(tasks, "save_account", return_value=None), patch.object(
+            tasks,
+            "_save_task_log",
+            return_value=None,
+        ), patch.object(tasks, "_auto_upload_cpa", return_value=None), patch.object(
+            tasks,
+            "_auto_import_codebanana2api",
+            return_value=None,
+        ):
+            tasks._execute_register_task(payload, logger)
+
+        self.assertEqual(
+            preflight_calls,
+            [
+                "http://Default.vs0:token-123@127.0.0.1:2260",
+                "http://Default.vs1:token-123@127.0.0.1:2260",
+            ],
+        )
+        self.assertEqual(used_proxies, ["http://Default.vs1:token-123@127.0.0.1:2260"])
+        self.assertTrue(any("Swarms 注册页预检失败" in message for message in logger.messages))
+
+    def test_execute_register_task_recycles_outlook_inventory_on_swarms_proxy_failure(self):
+        tasks = _import_tasks_module()
+        logger = _DummyTaskLogger()
+        payload = {
+            "platform": "swarms",
+            "count": 1,
+            "concurrency": 1,
+            "extra": {"mail_provider": "outlook_token"},
+        }
+        seed = types.SimpleNamespace(
+            email="demo@outlook.com",
+            password="mail-pass",
+            extra={
+                "mail_provider": "outlook_token",
+                "outlook_email": "demo@outlook.com",
+                "outlook_password": "mail-pass",
+                "outlook_client_id": "client-123",
+                "outlook_refresh_token": "refresh-456",
+                "_inventory": {
+                    "id": 42,
+                    "provider_key": "outlook_token",
+                    "metadata": {"password": "mail-pass", "client_id": "client-123"},
+                },
+            },
+        )
+
+        class _DummyInventoryRepository:
+            def __init__(self):
+                self.update_calls: list[dict] = []
+
+            def update_item(self, item_id, **kwargs):
+                self.update_calls.append({"item_id": item_id, **kwargs})
+                return None
+
+            def reset_many(self, *_args, **_kwargs):
+                return None
+
+        inventory_repository = _DummyInventoryRepository()
+
+        class _FakeProxyPool:
+            def get_next(self, region: str = "", exclude_urls=None):
+                return None
+
+            def report_success(self, url: str) -> None:
+                return None
+
+            def report_fail(self, url: str) -> None:
+                return None
+
+        class _FakePlatform:
+            def register(self, email=None, password=None):
+                raise RuntimeError("Swarms 注册请求失败: ProxyError: Tunnel connection failed: 504 Gateway Timeout")
+
+        with patch("core.proxy_pool.proxy_pool", _FakeProxyPool()), patch.object(
+            tasks,
+            "_resolve_register_lines",
+            return_value=[seed],
+        ), patch.object(tasks, "get", return_value=object()), patch.object(
+            tasks,
+            "MailboxInventoryRepository",
+            return_value=inventory_repository,
+        ), patch.object(tasks, "_build_platform_instance", return_value=_FakePlatform()), patch.object(
+            tasks,
+            "_persist_registration_snapshot",
+            return_value=None,
+        ), patch.object(tasks, "_save_task_log", return_value=None):
+            tasks._execute_register_task(payload, logger)
+
+        self.assertEqual(inventory_repository.update_calls[0]["item_id"], 42)
+        self.assertEqual(inventory_repository.update_calls[0]["status"], "unused")
+        self.assertIn("注册失败", inventory_repository.update_calls[0]["note"])
+        self.assertIn("Gateway Timeout", inventory_repository.update_calls[0]["last_error"])
 
     def test_create_register_task_maps_swarms_browser_mode_to_headed_executor(self):
         tasks = _import_tasks_module()

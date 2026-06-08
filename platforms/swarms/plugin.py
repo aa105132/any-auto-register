@@ -41,7 +41,9 @@ class SwarmsPlatform(BasePlatform):
         return password or self._make_random_password(length=16)
 
     def _map_swarms_result(self, result: dict, *, password: str = "") -> RegistrationResult:
-        api_key = result.get("api_key", "")
+        api_key = str(result.get("api_key", "") or "").strip()
+        if not api_key:
+            raise RuntimeError("Swarms 注册未获取 API Key，不计为注册成功")
         api_key_info = dict(result.get("api_key_info") or {})
         user_info = dict(result.get("user_info") or {})
         cookies = dict(result.get("cookies") or {})

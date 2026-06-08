@@ -8,6 +8,7 @@ from typing import Any
 
 from services.twoapi.key_store import TwoAPIKeyStore
 from services.twoapi.models import TwoAPISettings, mask_secret
+from services.twoapi.plugins.anycap import AnyCapTwoAPIPlugin
 from services.twoapi.plugins.swarms import SwarmsTwoAPIPlugin
 from services.twoapi.plugins.zo import ZoTwoAPIPlugin
 
@@ -34,6 +35,7 @@ PLUGIN_SETTING_KEYS: dict[str, tuple[str, ...]] = {
         "minimize_ask_context",
     ),
     "swarms": COMMON_PLUGIN_SETTING_KEYS,
+    "anycap": COMMON_PLUGIN_SETTING_KEYS,
 }
 
 
@@ -48,6 +50,7 @@ class TwoAPIManager:
         self.plugins = {
             "zo": ZoTwoAPIPlugin(settings=self.get_plugin_settings("zo"), data_dir=self.data_dir),
             "swarms": SwarmsTwoAPIPlugin(settings=self.get_plugin_settings("swarms"), data_dir=self.data_dir),
+            "anycap": AnyCapTwoAPIPlugin(settings=self.get_plugin_settings("anycap"), data_dir=self.data_dir),
         }
         self._keepalive_thread: threading.Thread | None = None
         self._keepalive_stop = threading.Event()
@@ -85,7 +88,7 @@ class TwoAPIManager:
         raw = self._load_settings_payload()
         plugins_raw = raw.get("plugins") if isinstance(raw.get("plugins"), dict) else {}
         result: dict[str, TwoAPISettings] = {}
-        for name in ("zo", "swarms"):
+        for name in ("zo", "swarms", "anycap"):
             result[name] = self._settings_from_mapping(dict(plugins_raw.get(name) or {}), base=self.settings)
         return result
 
@@ -154,7 +157,7 @@ class TwoAPIManager:
         return {
             "ok": True,
             "listen": "http://127.0.0.1:6543/zo/v1",
-            "listen_urls": ["http://127.0.0.1:6543/zo/v1", "http://127.0.0.1:6543/swarms/v1"],
+            "listen_urls": ["http://127.0.0.1:6543/zo/v1", "http://127.0.0.1:6543/swarms/v1", "http://127.0.0.1:6543/anycap/v1"],
             "settings": self.settings.__dict__,
             "plugin_settings": {name: self.serialize_plugin_settings(name) for name in sorted(self.plugin_settings)},
             "plugins": plugins,

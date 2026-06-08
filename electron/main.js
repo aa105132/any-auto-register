@@ -3,7 +3,7 @@ const { spawn } = require('child_process')
 const path = require('path')
 const http = require('http')
 
-const PORT = 8000
+const PORT = 8899
 const isDev = !app.isPackaged
 
 let backendProcess = null
@@ -20,7 +20,7 @@ function getBackendPath() {
 
 function startBackend() {
   if (isDev) {
-    console.log('[dev] 请手动启动后端: cd .. && uvicorn main:app --port 8000')
+    console.log('[dev] 请手动启动后端: cd .. && uvicorn main:app --port 8899')
     return
   }
 

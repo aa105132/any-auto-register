@@ -13,7 +13,7 @@ def fetch(url: str) -> dict:
 
 
 def main() -> int:
-    base = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8000/api"
+    base = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8899/api"
     endpoints = [
         f"{base}/health",
         f"{base}/ready",

@@ -356,7 +356,7 @@ const TABS: { id: string; label: string; icon: any; sections?: any[] }[] = [
       desc: 'Enter 注册成功后可自动导入到 enter2api 管理端，同时导出 AI API Token 到 output/keys.txt 和 output/ai_api_tokens.txt。',
       items: [
         { key: 'enter2api_enabled', label: '启用自动推送', type: 'checkbox' },
-        { key: 'enter2api_url', label: 'API URL', placeholder: 'http://127.0.0.1:8000' },
+        { key: 'enter2api_url', label: 'API URL', placeholder: 'http://127.0.0.1:8899' },
       ],
     }],
   },

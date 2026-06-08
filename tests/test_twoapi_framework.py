@@ -254,15 +254,8 @@ class TwoAPIFrameworkTests(unittest.TestCase):
             rendered = json.dumps(account.to_public(), ensure_ascii=False)
             self.assertNotIn("sk-secret-swarms-demo-12345678901234567890", rendered)
 
-    def test_swarms_forward_models_converts_available_models_to_openai_catalog(self):
-        upstream = Mock(
-            status_code=200,
-            ok=True,
-            headers={"content-type": "application/json"},
-        )
-        upstream.json.return_value = {"success": True, "models": ["gpt-4o", "claude-opus-4-6"]}
+    def test_swarms_forward_models_uses_verified_local_chat_catalog(self):
         transport = Mock()
-        transport.get.return_value = upstream
         plugin = SwarmsTwoAPIPlugin(settings=TwoAPISettings(max_retries=1), transport=transport)
         plugin.accounts = [
             TwoAPIAccount(
@@ -280,10 +273,28 @@ class TwoAPIFrameworkTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(data["object"], "list")
-        self.assertEqual(transport.get.call_args.args[0], "https://api.swarms.world/v1/models/available")
+        transport.get.assert_not_called()
         model_ids = {item["id"] for item in data["data"]}
         self.assertIn("gpt-4o", model_ids)
         self.assertIn("claude-opus-4-6", model_ids)
+        self.assertIn("claude-opus-4-5", model_ids)
+        self.assertIn("gemini/gemini-3.5-flash", model_ids)
+        self.assertIn("gemini-3.5-flash", model_ids)
+        self.assertIn("gpt-5.5", model_ids)
+        self.assertIn("gpt-5.5-2026-04-23", model_ids)
+        self.assertIn("gpt-5.4", model_ids)
+        self.assertIn("gpt-5.4-mini", model_ids)
+        self.assertNotIn("gpt5.5", model_ids)
+        self.assertNotIn("gpt5.4", model_ids)
+        self.assertNotIn("gpt-5.5-pro", model_ids)
+        self.assertNotIn("gpt-5.5-pro-2026-04-23", model_ids)
+        self.assertNotIn("gpt-5.4-pro", model_ids)
+        self.assertNotIn("claude-opus-4-8", model_ids)
+        self.assertNotIn("claude-opus-4.8", model_ids)
+        self.assertNotIn("claude-opus-4-7", model_ids)
+        self.assertNotIn("claude-opus-4.5", model_ids)
+        self.assertNotIn("claude-sonnet-4.5", model_ids)
+        self.assertNotIn("gpt-4.1", model_ids)
 
     def test_swarms_forward_models_returns_local_catalog_when_available_models_unavailable(self):
         transport = Mock()
@@ -377,13 +388,52 @@ class TwoAPIFrameworkTests(unittest.TestCase):
         self.assertEqual(payload["extra"]["mail_provider"], "luckmail")
         runtime_mock.wake_up.assert_called_once()
 
-    def test_swarms_forward_chat_calls_native_openai_compatible_endpoint(self):
+
+    def test_swarms_forward_chat_wraps_gemini35_flash_with_native_swarm_payload(self):
         transport = Mock()
         transport.post.return_value = Mock(
             status_code=200,
             ok=True,
-            content=b'{"choices":[{"message":{"content":"OK"}}]}',
-            text='{"choices":[{"message":{"content":"OK"}}]}',
+            content=b'{"job_id":"job-1","output":[{"role":"Swarms Assistant","content":"OK"}],"usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3}}',
+            text='{"job_id":"job-1","output":[{"role":"Swarms Assistant","content":"OK"}],"usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3}}',
+            headers={"content-type": "application/json"},
+            close=Mock(),
+        )
+        plugin = SwarmsTwoAPIPlugin(settings=TwoAPISettings(), transport=transport)
+        plugin.accounts = [
+            TwoAPIAccount(
+                plugin="swarms",
+                email="demo@swarms.test",
+                base_url="https://api.swarms.world/v1",
+                api_key="sk-secret-swarms-demo-12345678901234567890",
+                credit_amount=100,
+                credit_ok=True,
+            )
+        ]
+
+        response = plugin.forward_chat({
+            "model": "gemini/gemini-3.5-flash",
+            "messages": [{"role": "user", "content": "只输出 OK"}],
+            "temperature": 0,
+            "max_tokens": 16,
+        })
+        data = response.json()
+
+        self.assertEqual(transport.post.call_args.args[0], "https://api.swarms.world/v1/swarm/completions")
+        sent = transport.post.call_args.kwargs["json"]
+        self.assertEqual(sent["name"], "Swarms Assistant")
+        self.assertEqual(sent["agents"][0]["model_name"], "gemini/gemini-3.5-flash")
+        self.assertEqual(sent["agents"][0]["agent_name"], "Swarms Assistant")
+        self.assertEqual(data["choices"][0]["message"]["content"], "OK")
+        self.assertEqual(data["usage"]["completion_tokens"], 1)
+
+    def test_swarms_forward_chat_uses_native_swarm_wrapper_for_all_models(self):
+        transport = Mock()
+        transport.post.return_value = Mock(
+            status_code=200,
+            ok=True,
+            content=b'{"job_id":"job-2","output":[{"role":"Swarms Assistant","content":"OK"}],"usage":{"input_tokens":4,"output_tokens":1,"total_tokens":5}}',
+            text='{"job_id":"job-2","output":[{"role":"Swarms Assistant","content":"OK"}],"usage":{"input_tokens":4,"output_tokens":1,"total_tokens":5}}',
             headers={"content-type": "application/json"},
             close=Mock(),
         )
@@ -400,14 +450,109 @@ class TwoAPIFrameworkTests(unittest.TestCase):
         ]
 
         response = plugin.forward_chat({"model": "gpt-4o", "messages": [{"role": "user", "content": "ping"}]})
+        data = response.json()
 
         self.assertEqual(response.status_code, 200)
         args, kwargs = transport.post.call_args
-        self.assertEqual(args[0], "https://api.swarms.world/v1/chat/completions")
+        self.assertEqual(args[0], "https://api.swarms.world/v1/swarm/completions")
         self.assertEqual(kwargs["headers"]["Authorization"], "Bearer sk-secret-swarms-demo-12345678901234567890")
         self.assertEqual(kwargs["headers"]["x-api-key"], "sk-secret-swarms-demo-12345678901234567890")
-        self.assertEqual(kwargs["json"]["model"], "gpt-4o")
+        self.assertEqual(kwargs["json"]["task"], "ping")
+        self.assertEqual(kwargs["json"]["agents"][0]["model_name"], "gpt-4o")
         self.assertFalse(kwargs["stream"])
+        self.assertEqual(data["choices"][0]["message"]["content"], "OK")
+        self.assertEqual(data["usage"]["prompt_tokens"], 4)
+
+    def test_swarms_forward_chat_rejects_openai_tools_because_hosted_api_does_not_return_tool_calls(self):
+        transport = Mock()
+        plugin = SwarmsTwoAPIPlugin(settings=TwoAPISettings(), transport=transport)
+        plugin.accounts = [
+            TwoAPIAccount(
+                plugin="swarms",
+                email="demo@swarms.test",
+                base_url="https://api.swarms.world/v1",
+                api_key="sk-secret-swarms-demo-12345678901234567890",
+                credit_amount=100,
+                credit_ok=True,
+            )
+        ]
+
+        response = plugin.forward_chat({
+            "model": "gpt-5.4-mini",
+            "messages": [{"role": "user", "content": "Use get_weather for Paris"}],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "parameters": {"type": "object", "properties": {"location": {"type": "string"}}},
+                    },
+                }
+            ],
+            "tool_choice": "required",
+        })
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["error"]["code"], "swarms_tools_unsupported")
+        transport.post.assert_not_called()
+
+
+    def test_swarms_forward_chat_stream_wraps_native_sse_as_openai_chunks(self):
+        class FakeSwarmsStreamResponse:
+            status_code = 200
+            ok = True
+            headers = {"content-type": "text/event-stream; charset=utf-8"}
+            content = b""
+            text = ""
+
+            def __init__(self):
+                self.closed = False
+
+            def iter_lines(self, decode_unicode=True):
+                yield "event: chunk"
+                yield 'data: {"output":[{"role":"Swarms Assistant","content":"O"}]}'
+                yield ""
+                yield "event: chunk"
+                yield 'data: {"output":[{"role":"Swarms Assistant","content":"OK"}]}'
+                yield ""
+                yield "event: done"
+                yield 'data: {"status":"success"}'
+                yield ""
+
+            def close(self):
+                self.closed = True
+
+        upstream = FakeSwarmsStreamResponse()
+        transport = Mock()
+        transport.post.return_value = upstream
+        plugin = SwarmsTwoAPIPlugin(settings=TwoAPISettings(), transport=transport)
+        plugin.accounts = [
+            TwoAPIAccount(
+                plugin="swarms",
+                email="demo@swarms.test",
+                base_url="https://api.swarms.world/v1",
+                api_key="sk-secret-swarms-demo-12345678901234567890",
+                credit_amount=100,
+                credit_ok=True,
+            )
+        ]
+
+        response = plugin.forward_chat(
+            {"model": "gemini/gemini-3.5-flash", "stream": True, "messages": [{"role": "user", "content": "只输出 OK"}]},
+            stream=True,
+        )
+        body = b"".join(response.iter_content(chunk_size=None)).decode("utf-8")
+
+        args, kwargs = transport.post.call_args
+        self.assertEqual(args[0], "https://api.swarms.world/v1/swarm/completions")
+        self.assertTrue(kwargs["json"]["stream"])
+        self.assertTrue(kwargs["stream"])
+        self.assertIn('"object": "chat.completion.chunk"', body)
+        self.assertIn('"role": "assistant"', body)
+        self.assertIn('"content": "O"', body)
+        self.assertIn('"content": "K"', body)
+        self.assertIn("data: [DONE]", body)
+        self.assertTrue(upstream.closed)
 
 
     def test_swarms_twoapi_push_local_imports_current_registration_account(self):

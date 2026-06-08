@@ -36,7 +36,7 @@ const TaskLogPanel = lazy(async () => {
 
 
 
-const TWOAPI_PUSH_PLATFORMS = new Set(['zo', 'swarms'])
+const TWOAPI_PUSH_PLATFORMS = new Set(['zo', 'swarms', 'anycap'])
 
 const FALLBACK_PLATFORMS = [
 
@@ -1389,7 +1389,11 @@ export default function Register() {
 
                     <span className="text-[var(--color-text-muted)]">
 
-                      {resinPreview.proxyUrl ? `Resin: ${resinPreview.resolvedPlatform || 'active'}` : '无全局 Resin'}
+                      {resinPreview.proxyUrl
+                        ? form.proxy
+                          ? `当前命中 Resin Platform 预览：${resinPreview.resolvedPlatform || 'active'} · 任务代理已覆盖全局 Resin`
+                          : `当前命中 Resin Platform 预览：${resinPreview.resolvedPlatform || 'active'} · 沿用全局 Resin 代理`
+                        : '无全局 Resin'}
 
                     </span>
 

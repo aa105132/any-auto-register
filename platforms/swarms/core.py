@@ -51,19 +51,34 @@ class SwarmsClient:
     ) -> None:
         self.log = log_fn
         self.session = requests.Session()
+        self.session.trust_env = False
+        self._proxy_url = str(proxy or "").strip()
         self.session.headers.update({
             "User-Agent": CHROME_UA,
             "Accept": "application/json",
             "Accept-Language": "en-US,en;q=0.9,zh-CN;q=0.8",
             "apikey": SUPABASE_ANON_KEY,
         })
-        if proxy:
-            self.session.proxies = {"http": proxy, "https": proxy}
+        if self._proxy_url:
+            self.session.proxies = self._request_proxies()
         self._access_token: str = ""
         self._refresh_token: str = ""
         self._user_id: str = ""
         self._user_info: dict[str, Any] = {}
         self._session_payload: dict[str, Any] = {}
+
+    def _request_proxies(self) -> dict[str, str] | None:
+        if not self._proxy_url:
+            return None
+        return {"http": self._proxy_url, "https": self._proxy_url}
+
+    def _session_get(self, url: str, **kwargs):
+        kwargs.setdefault("proxies", self._request_proxies())
+        return self.session.get(url, **kwargs)
+
+    def _session_post(self, url: str, **kwargs):
+        kwargs.setdefault("proxies", self._request_proxies())
+        return self.session.post(url, **kwargs)
 
     def _auth_headers(self) -> dict[str, str]:
         headers: dict[str, str] = {}
@@ -71,11 +86,28 @@ class SwarmsClient:
             headers["Authorization"] = f"Bearer {self._access_token}"
         return headers
 
+    def log_proxy_probe(self) -> str:
+        if not self.session.proxies:
+            return ""
+        last_error = ""
+        for url in ("https://api.ipify.org", "https://ifconfig.me/ip", "https://httpbin.org/ip"):
+            try:
+                resp = self._session_get(url, timeout=10)
+                text = (resp.text or "").strip()
+                if resp.status_code < 400 and text:
+                    self.log(f"Swarms 代理出口 IP: {text[:120]}")
+                    return text
+                last_error = f"{url} HTTP {resp.status_code}"
+            except Exception as exc:
+                last_error = str(exc)
+        self.log(f"Swarms 代理出口 IP 探测失败: {last_error[:160]}")
+        return ""
+
     def _post(self, url: str, payload: dict | None = None, *, auth: bool = False) -> dict:
         headers = {"Content-Type": "application/json"}
         if auth:
             headers.update(self._auth_headers())
-        resp = self.session.post(
+        resp = self._session_post(
             url,
             json=payload or {},
             headers=headers,
@@ -93,7 +125,7 @@ class SwarmsClient:
         headers = {}
         if auth:
             headers.update(self._auth_headers())
-        resp = self.session.get(url, headers=headers, timeout=30)
+        resp = self._session_get(url, headers=headers, timeout=30)
         if resp.status_code >= 400:
             self.log(f"Swarms API error {resp.status_code}: {resp.text[:500]}")
             resp.raise_for_status()
@@ -104,30 +136,44 @@ class SwarmsClient:
 
     # --- Supabase GoTrue Auth ---
 
+    def _extract_signup_action_id_from_text(self, text: str) -> str:
+        patterns = (
+            r'createServerReference\)\(\s*["\']([0-9a-f]{40,})["\'][\s\S]{0,240}?["\']signUp["\']',
+            r'createServerReference\(\s*["\']([0-9a-f]{40,})["\'][\s\S]{0,240}?["\']signUp["\']',
+            r'["\']([0-9a-f]{40,})["\'][\s\S]{0,240}?["\']signUp["\']',
+            r'["\']signUp["\'][\s\S]{0,240}?["\']([0-9a-f]{40,})["\']',
+        )
+        for pattern in patterns:
+            match = re.search(pattern, text or "", re.IGNORECASE)
+            if match:
+                return match.group(1)
+        return ""
+
     def _extract_signup_action_id(self, html: str) -> str:
-        # Next Server Action ID 会随部署变化；优先从登录页引用的 chunk 中解析。
-        # 解析失败时回退到当前线上实测 ID，避免临时页面结构变化导致注册中断。
-        candidates = re.findall(r'<script[^>]+src=["\']([^"\']+\.js[^"\']*)["\']', html or "")
+        # Next Server Action ID 会随部署变化；优先动态解析当前页面和 page chunk。
+        direct_match = self._extract_signup_action_id_from_text(html)
+        if direct_match:
+            return direct_match
+
+        candidates: list[str] = []
+        for src in re.findall(r'<script[^>]+src=["\']([^"\']+\.js[^"\']*)["\']', html or ""):
+            if src not in candidates:
+                candidates.append(src)
+        for src in re.findall(r'(/_next/static/[^"\']+\.js[^"\']*)', html or ""):
+            if src not in candidates:
+                candidates.append(src)
+
         for src in candidates:
             if "signin" not in src and "page" not in src and "chunks" not in src:
                 continue
             try:
                 chunk_url = urljoin(SWARMS_BASE, src)
-                resp = self.session.get(chunk_url, timeout=30)
+                resp = self._session_get(chunk_url, timeout=30)
                 if resp.status_code >= 400:
                     continue
-                match = re.search(
-                    r'createServerReference\("([0-9a-f]{40,})"[^)]*?,"signUp"\)',
-                    resp.text,
-                )
+                match = self._extract_signup_action_id_from_text(resp.text)
                 if match:
-                    return match.group(1)
-                match = re.search(
-                    r'createServerReference\("([0-9a-f]{40,})"[^)]*?signUp',
-                    resp.text,
-                )
-                if match:
-                    return match.group(1)
+                    return match
             except Exception:
                 continue
         return SWARMS_SIGNUP_ACTION_ID
@@ -142,32 +188,47 @@ class SwarmsClient:
         self.log(f"注册 Swarms Marketplace 账号: {email}")
         # 不能直接打 Supabase /signup：实测直连注册不会初始化 marketplace 额度，
         # 导致后续 apiKey.addApiKey 报 No credit available。
-        page_resp = self.session.get(SWARMS_SIGNUP_PAGE, timeout=30)
-        if page_resp.status_code >= 400:
-            self.log(f"Swarms 注册页请求失败 {page_resp.status_code}: {page_resp.text[:300]}")
-            page_resp.raise_for_status()
-        action_id = self._extract_signup_action_id(page_resp.text)
         fingerprint = self._signup_fingerprint()
-        files = {
-            "1_email": (None, email),
-            "1_password": (None, password),
-            "1_fingerprint": (None, fingerprint),
-            "0": (None, '["$K1"]'),
-        }
-        headers = {
-            "Accept": "text/x-component",
-            "Next-Action": action_id,
-            "Origin": SWARMS_BASE,
-            "Referer": SWARMS_SIGNUP_PAGE,
-        }
-        resp = self.session.post(
-            SWARMS_SIGNUP_PAGE,
-            files=files,
-            headers=headers,
-            timeout=30,
-            allow_redirects=False,
-        )
+
+        def _load_signup_action_id() -> str:
+            page_resp = self._session_get(SWARMS_SIGNUP_PAGE, timeout=30)
+            if page_resp.status_code >= 400:
+                self.log(f"Swarms 注册页请求失败 {page_resp.status_code}: {page_resp.text[:300]}")
+                page_resp.raise_for_status()
+            return self._extract_signup_action_id(page_resp.text)
+
+        def _post_signup_action(current_action_id: str):
+            files = {
+                "1_email": (None, email),
+                "1_password": (None, password),
+                "1_fingerprint": (None, fingerprint),
+                "0": (None, '["$K1"]'),
+            }
+            headers = {
+                "Accept": "text/x-component",
+                "Next-Action": current_action_id,
+                "Origin": SWARMS_BASE,
+                "Referer": SWARMS_SIGNUP_PAGE,
+            }
+            response = self._session_post(
+                SWARMS_SIGNUP_PAGE,
+                files=files,
+                headers=headers,
+                timeout=30,
+                allow_redirects=False,
+            )
+            return response
+
+        action_id = _load_signup_action_id()
+        resp = _post_signup_action(action_id)
         text = resp.text or ""
+        if resp.status_code == 404 and "Server action not found" in text:
+            self.log("Swarms 注册 action 已失效，刷新注册页重新解析 action...")
+            refreshed_action_id = _load_signup_action_id()
+            if refreshed_action_id and refreshed_action_id != action_id:
+                action_id = refreshed_action_id
+                resp = _post_signup_action(action_id)
+                text = resp.text or ""
         if resp.status_code >= 400:
             self.log(f"Swarms 注册 action 失败 {resp.status_code}: {text[:500]}")
             resp.raise_for_status()
@@ -339,7 +400,7 @@ class SwarmsClient:
         last_response = None
         session_result: dict = {}
         for _ in range(5):
-            response = self.session.get(
+            response = self._session_get(
                 current_url,
                 headers=headers,
                 timeout=30,
@@ -435,14 +496,14 @@ class SwarmsClient:
         cookies = self._trpc_cookies()
         request_method = str(method or "POST").upper()
         if request_method == "GET":
-            resp = self.session.get(
+            resp = self._session_get(
                 url,
                 headers=headers,
                 cookies=cookies,
                 timeout=30,
             )
         else:
-            resp = self.session.post(
+            resp = self._session_post(
                 url,
                 json={"json": payload or {}},
                 headers=headers,
@@ -499,6 +560,12 @@ class SwarmsClient:
         return result if isinstance(result, dict) else {"data": result}
 
     @staticmethod
+    def random_full_name() -> str:
+        adjectives = ("Nova", "Luna", "Orion", "Atlas", "Echo", "River", "Sky", "Pixel")
+        nouns = ("Pilot", "Builder", "Runner", "Maker", "Scout", "Ranger", "Coder", "Agent")
+        return f"{secrets.choice(adjectives)} {secrets.choice(nouns)} {secrets.randbelow(9000) + 1000}"
+
+    @staticmethod
     def _username_from_email(email: str) -> str:
         local = str(email or "").split("@", 1)[0].lower()
         normalized = re.sub(r"[^a-z0-9_]", "_", local).strip("_")
@@ -551,7 +618,7 @@ class SwarmsClient:
                 return last
             time.sleep(max(float(interval or 1.0), 0.5))
 
-    def ensure_profile(self, *, email: str, full_name: str = "Auto Register") -> dict:
+    def ensure_profile(self, *, email: str, full_name: str | None = None) -> dict:
         profile: dict = {}
         try:
             profile = self.get_profile()
@@ -568,12 +635,15 @@ class SwarmsClient:
             except Exception as exc:
                 self.log(f"设置用户名失败（非阻塞）: {exc}")
         current_full_name = str(profile.get("full_name") or "").strip()
-        if not current_full_name and full_name:
+        target_full_name = str(full_name or "").strip() if full_name is not None else self.random_full_name()
+        if target_full_name == "Auto Register":
+            target_full_name = self.random_full_name()
+        if not current_full_name and target_full_name:
             try:
-                updated = self.update_full_name(full_name)
+                updated = self.update_full_name(target_full_name)
                 if isinstance(updated, dict):
                     profile.update(updated)
-                profile.setdefault("full_name", full_name)
+                profile.setdefault("full_name", target_full_name)
             except Exception as exc:
                 self.log(f"设置昵称失败（非阻塞）: {exc}")
         return profile

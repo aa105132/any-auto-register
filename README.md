@@ -29,7 +29,7 @@
 ### 环境要求
 
 - Python 3.11+
-- Node.js 18+
+- Node.js 20.19+（Vite 8 的最低要求；Node 18 会在前端构建时失败）
 
 ### 安装
 
@@ -90,13 +90,13 @@ python3 -m camoufox fetch
 #### macOS / Linux
 
 ```bash
-.venv/bin/python3 -m uvicorn main:app --port 8000
+.venv/bin/python3 -m uvicorn main:app --port 8899
 ```
 
 #### Windows
 
 ```bat
-.venv\Scripts\python -m uvicorn main:app --port 8000
+.venv\Scripts\python -m uvicorn main:app --port 8899
 ```
 
 浏览器访问 `http://localhost:5173`
