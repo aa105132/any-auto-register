@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from api.twoapi import anycap_proxy_router, management_router, proxy_router, swarms_proxy_router
+from api.twoapi import management_router, thesys_proxy_router
 from services.twoapi.manager import get_twoapi_manager
 
 
@@ -33,9 +33,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(management_router, prefix="/api")
-app.include_router(proxy_router)
-app.include_router(swarms_proxy_router)
-app.include_router(anycap_proxy_router)
+app.include_router(thesys_proxy_router)
 
 
 def main() -> None:

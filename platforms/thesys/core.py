@@ -144,7 +144,7 @@ class ThesysClient:
         response = self.session.post(_api_url(path), json=body or {}, timeout=timeout)
         return _raise_for_api(response, path)
 
-    def generate_email_otp(self, email: str, *, app: str = "chat") -> dict[str, Any]:
+    def generate_email_otp(self, email: str, *, app: str = "console") -> dict[str, Any]:
         data = self._post("/auth/otp.generate.email", {"email": email, "app": app})
         return data if isinstance(data, dict) else {"data": data}
 

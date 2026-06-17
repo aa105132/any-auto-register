@@ -35,6 +35,7 @@ class ThesysProtocolMailboxWorker:
         pre_auth_session_id = self.client.extract_pre_auth_session_id(otp_send_result)
         if not pre_auth_session_id:
             raise RuntimeError(f"Thesys 发码响应缺少 preAuthSessionId: {otp_send_result}")
+        device_id = str(otp_send_result.get("deviceId") or "").strip()
 
         self._l("等待邮箱 OTP")
         code = str(otp_callback() or "").strip()
@@ -42,20 +43,31 @@ class ThesysProtocolMailboxWorker:
             raise RuntimeError("Thesys 邮箱 OTP 为空")
 
         self._l("提交 OTP 登录/注册")
-        auth_result = self.client.verify_otp(pre_auth_session_id=pre_auth_session_id, code=code)
+        auth_result = self.client.verify_otp(pre_auth_session_id=pre_auth_session_id, code=code, device_id=device_id)
         cookies = dict(auth_result.get("cookies") or {})
         if not (cookies.get("sAccessToken") or cookies.get("sRefreshToken")):
             self._l("OTP 已验证，但未从 Set-Cookie 中看到 sAccessToken/sRefreshToken，继续尝试控制台 API")
 
         self._l("读取用户和组织信息")
         user = self.client.user_me()
-        orgs = self.client.list_orgs()
-        if not orgs:
-            raise RuntimeError("Thesys 未获取到组织，无法创建 API Key")
-        org = orgs[0]
-        org_id = str(org.get("id") or org.get("orgId") or "").strip()
+        # 优先从 user_me.orgClaims 取 orgId（orgs.list.mine 对新账号常返回 500）
+        org_claims = user.get("orgClaims") if isinstance(user, dict) else None
+        org_id = ""
+        org: dict[str, Any] = {}
+        orgs: list[dict[str, Any]] = []
+        if isinstance(org_claims, list) and org_claims:
+            org_id = str(org_claims[0].get("orgId") or org_claims[0].get("id") or "").strip()
+            org = dict(org_claims[0])
         if not org_id:
-            raise RuntimeError(f"Thesys 组织响应缺少 id: {org}")
+            try:
+                orgs = self.client.list_orgs()
+            except Exception as exc:
+                self._l(f"orgs.list.mine 失败（忽略，使用 orgClaims）: {exc}")
+            if orgs:
+                org_id = str(orgs[0].get("id") or orgs[0].get("orgId") or "").strip()
+                org = dict(orgs[0])
+        if not org_id:
+            raise RuntimeError("Thesys 未获取到组织，无法创建 API Key")
 
         resolved_key_name = key_name or f"auto-register-{int(time.time())}"
         self._l(f"创建 API Key: {resolved_key_name}")
