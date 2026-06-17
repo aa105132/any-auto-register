@@ -1,11 +1,14 @@
 """AI-ROUTER 协议优先邮箱注册流程。"""
 from __future__ import annotations
 
+import hashlib
+import random
 import time
 from typing import Any
 
+from core.config_store import config_store
 from platforms.airouter.browser_turnstile import AiRouterTurnstileHarvester
-from platforms.airouter.core import API_BASE, DASHBOARD_URL, REGISTER_URL, SITE_URL, AiRouterClient
+from platforms.airouter.core import API_BASE, DASHBOARD_URL, REGISTER_URL, SITE_URL, AiRouterClient, build_airouter_browser_fingerprint
 
 
 class AiRouterMailboxRegistrar:
@@ -25,12 +28,17 @@ class AiRouterMailboxRegistrar:
         group_id: int | str | None = None,
         min_success_balance: float = 20.0,
         webrtc_client_ip: str = "",
+        captcha_solver: str = "auto",
+        yescaptcha_key: str = "",
+        yescaptcha_api_url: str = "https://api.yescaptcha.com",
+        allow_external_cdp: bool = False,
     ) -> None:
         self.proxy = proxy
         self.otp_callback = otp_callback
         self.timeout = timeout
         self.chrome_path = chrome_path
         self.cdp_url = cdp_url
+        self.allow_external_cdp = bool(allow_external_cdp)
         self.log = log_fn or (lambda _msg: None)
         self.promo_code = promo_code
         self.invitation_code = invitation_code
@@ -39,18 +47,90 @@ class AiRouterMailboxRegistrar:
         self.group_id = group_id
         self.min_success_balance = float(min_success_balance or 20.0)
         self.webrtc_client_ip = webrtc_client_ip
-        self.client = AiRouterClient(proxy=proxy, log_fn=log_fn)
+        self.captcha_solver = str(captcha_solver or "auto").strip().lower()
+        self.yescaptcha_key = str(yescaptcha_key or config_store.get("yescaptcha_key", "") or "").strip()
+        self.yescaptcha_api_url = str(
+            yescaptcha_api_url
+            or config_store.get("yescaptcha_api_url", "")
+            or "https://api.yescaptcha.com"
+        ).strip()
+        self.browser_fingerprint = build_airouter_browser_fingerprint(
+            f"{proxy or ''}|{time.time_ns()}|{id(self)}|{random.random()}"
+        )
+        self.client = AiRouterClient(proxy=proxy, log_fn=log_fn, browser_fingerprint=self.browser_fingerprint)
+        self.affiliate_fingerprint = self._build_affiliate_fingerprint()
 
     def _l(self, msg: str) -> None:
         self.log(f"[AI-ROUTER] {msg}")
 
-    def _harvest_turnstile(self, *, email: str, password: str) -> str:
+    def _build_affiliate_fingerprint(self) -> str:
+        material = "|".join([
+            str(self.proxy or ""),
+            str(self.browser_fingerprint.get("user_agent") or ""),
+            str(self.browser_fingerprint.get("viewport_width") or ""),
+            str(self.browser_fingerprint.get("viewport_height") or ""),
+            str(time.time_ns()),
+            str(random.random()),
+        ])
+        # FingerprintJS visitorId 通常是短 hash；这里生成稳定可提交的同类字段，
+        # 避免协议注册缺少前端真实会携带的 affiliate_fingerprint。
+        return hashlib.sha256(material.encode("utf-8", errors="ignore")).hexdigest()[:32]
+
+    def _harvest_turnstile(self, *, email: str, password: str, site_key: str = "") -> str:
+        solver_name = (self.captcha_solver or "auto").strip().lower()
+
+        if solver_name in {"cdp", "cdp_turnstile", "cdp_protocol", "browser"}:
+            self._l("CDP 协议混合：强制使用 CDP 获取 Turnstile token")
+            return self._harvest_turnstile_cdp(email=email, password=password)
+
+        if solver_name in {"2captcha", "twocaptcha", "twocaptcha_api"} and site_key:
+            try:
+                from core.base_captcha import TwoCaptcha
+                api_key = str(config_store.get("twocaptcha_key", "") or "").strip()
+                if not api_key:
+                    raise RuntimeError("2Captcha Key 未配置")
+                self._l("协议模式：通过 2Captcha 获取 Turnstile token")
+                token = TwoCaptcha(api_key).solve_turnstile(REGISTER_URL, site_key)
+                if token:
+                    self._l(f"2Captcha Turnstile token obtained length={len(token)}")
+                    return token
+            except Exception as exc:
+                self._l(f"2Captcha Turnstile 失败，回退 CDP: {exc}")
+                return self._harvest_turnstile_cdp(email=email, password=password)
+
+        # 协议模式默认优先 YesCaptcha，并把同一个任务代理传给打码平台，保证 token 与注册请求同出口。
+        if solver_name in {"yescaptcha", "yescaptcha_api", "auto", ""} and self.yescaptcha_key and site_key:
+            try:
+                from core.base_captcha import YesCaptcha
+                self._l("协议模式：通过 YesCaptcha 代理模式获取 Turnstile token")
+                solver = YesCaptcha(self.yescaptcha_key, self.yescaptcha_api_url)
+                token = solver.solve_turnstile(
+                    REGISTER_URL,
+                    site_key,
+                    proxy=self.proxy,
+                    user_agent=str(self.browser_fingerprint.get("user_agent") or ""),
+                )
+                if token:
+                    self._l(f"YesCaptcha Turnstile token obtained length={len(token)}")
+                    return token
+            except Exception as exc:
+                self._l(f"YesCaptcha Turnstile 失败，回退 CDP: {exc}")
+                return self._harvest_turnstile_cdp(email=email, password=password)
+
+        if solver_name in {"yescaptcha", "yescaptcha_api", "auto", ""} and not self.yescaptcha_key:
+            self._l("YesCaptcha Key 未配置，回退 CDP")
+
+        return self._harvest_turnstile_cdp(email=email, password=password)
+
+    def _harvest_turnstile_cdp(self, *, email: str, password: str) -> str:
         harvester = AiRouterTurnstileHarvester(
             proxy=self.proxy,
             timeout=self.timeout,
             chrome_path=self.chrome_path,
             cdp_url=self.cdp_url,
             log_fn=self.log,
+            browser_fingerprint=self.browser_fingerprint,
+            allow_external_cdp=self.allow_external_cdp,
         )
         return harvester.harvest(email=email, password=password)
 
@@ -62,13 +142,20 @@ class AiRouterMailboxRegistrar:
             f"settings: email_verify={email_verify_enabled} turnstile={turnstile_enabled} "
             f"site_key={settings.get('turnstile_site_key') or '-'}"
         )
+        self._l(
+            "browser fingerprint: "
+            f"ua={str(self.browser_fingerprint.get('user_agent') or '')[:90]} "
+            f"lang={self.browser_fingerprint.get('locale') or '-'} "
+            f"viewport={self.browser_fingerprint.get('viewport_width')}x{self.browser_fingerprint.get('viewport_height')} "
+            f"affiliate_fp={self.affiliate_fingerprint[:10]}..."
+        )
 
         turnstile_token = ""
         if turnstile_enabled:
-            self._l("通过 CDP 采集 Turnstile token")
-            turnstile_token = self._harvest_turnstile(email=email, password=password)
+            self._l("获取 Turnstile token")
+            turnstile_token = self._harvest_turnstile(email=email, password=password, site_key=str(settings.get("turnstile_site_key") or ""))
             if not turnstile_token:
-                raise RuntimeError("AI-ROUTER 注册需要 Turnstile token，但采集失败")
+                self._l("未采集到 Turnstile token，页面可能未启用组件，继续协议流程")
 
         verify_code = ""
         send_code_result: dict[str, Any] = {}
@@ -95,6 +182,7 @@ class AiRouterMailboxRegistrar:
             promo_code=self.promo_code,
             invitation_code=self.invitation_code,
             aff_code=self.aff_code,
+            affiliate_fingerprint=self.affiliate_fingerprint,
             webrtc_client_ip=self.webrtc_client_ip,
         )
         access_token = str(registration.get("access_token") or "").strip()
@@ -149,6 +237,8 @@ class AiRouterMailboxRegistrar:
             "group_info": group_info,
             "api_key_info": key_result.get("data") if isinstance(key_result.get("data"), dict) else {},
             "api_verification": api_verification,
+            "affiliate_fingerprint": self.affiliate_fingerprint,
+            "browser_fingerprint": self.browser_fingerprint,
             "site_url": SITE_URL,
             "register_url": REGISTER_URL,
             "dashboard_url": DASHBOARD_URL,

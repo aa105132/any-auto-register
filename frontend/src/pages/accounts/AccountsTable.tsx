@@ -2,7 +2,7 @@ import { Badge } from '@/components/ui/badge'
 import { Eye } from 'lucide-react'
 import type { Account } from '@/lib/account-utils'
 import {
-  getDisplayStatus, getVerificationMailbox, getPrimaryToken, getCashierUrl, getCompactStatusMeta,
+  getDisplayStatus, getVerificationMailbox, getPrimaryToken, getCashierUrl, getBalance,
 } from '@/lib/account-utils'
 
 const STATUS_VARIANT: Record<string, any> = {
@@ -53,7 +53,7 @@ export function AccountsTable({
             <th>邮箱</th>
             <th>密码</th>
             <th>状态</th>
-            <th className="hidden lg:table-cell">生命周期</th>
+            <th className="hidden lg:table-cell">余额</th>
             <th className="hidden xl:table-cell">验证邮箱</th>
             <th className="hidden xl:table-cell">Token</th>
             <th className="hidden xl:table-cell">Cashier</th>
@@ -78,7 +78,7 @@ export function AccountsTable({
                   </Badge>
                 </td>
                 <td className="hidden lg:table-cell text-xs text-[var(--color-text-secondary)]">
-                  {getCompactStatusMeta(acc)}
+                  {getBalance(acc) ? <span className="font-medium text-[var(--color-text)]">${getBalance(acc)}</span> : '—'}
                 </td>
                 <td className="hidden xl:table-cell text-xs text-[var(--color-text-secondary)]">
                   {mailbox ? `${mailbox.provider}: ${mailbox.email}` : '-'}
@@ -88,7 +88,7 @@ export function AccountsTable({
                 </td>
                 <td className="hidden xl:table-cell">
                   {cashierUrl ? (
-                    <a href={cashierUrl} target="_blank" rel="noopener noreferrer" className="text-[var(--color-accent-text)] text-xs hover:underline">打开</a>
+                    <a href={cashierUrl} target="_blank" rel="noopener noreferrer" className="text-[var(--color-text)] text-xs hover:underline">打开</a>
                   ) : '-'}
                 </td>
                 <td>

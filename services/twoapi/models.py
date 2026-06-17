@@ -86,4 +86,6 @@ def mask_secret_in_text(value: str) -> str:
     text = re.sub(r"cwk-[A-Za-z0-9_\-.]+", lambda m: mask_secret(m.group(0)), text)
     text = re.sub(r"sk-[A-Za-z0-9_\-.]{12,}", lambda m: mask_secret(m.group(0)), text)
     text = re.sub(r"AIza[0-9A-Za-z_\-]{20,}", lambda m: mask_secret(m.group(0)), text)
+    # Thesys 等平台的 API Key 不一定有固定前缀；日志里出现长 token 时统一脱敏。
+    text = re.sub(r"\b[A-Za-z0-9_\-.]{48,}\b", lambda m: mask_secret(m.group(0)), text)
     return text

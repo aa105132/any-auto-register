@@ -27,6 +27,11 @@ export function getVerificationMailbox(acc: Account) {
 }
 
 export function getLifecycleStatus(acc: Account) { return acc?.lifecycle_status || 'registered' }
+export function getBalance(acc: Account): string {
+  const ov = getAccountOverview(acc)
+  const v = ov?.balance_usd ?? acc?.balance_usd ?? ''
+  return String(v ?? '').trim()
+}
 export function getDisplayStatus(acc: Account) { return acc?.display_status || acc?.plan_state || getLifecycleStatus(acc) }
 export function getPlanState(acc: Account) { return acc?.plan_state || acc?.overview?.plan_state || 'unknown' }
 export function getValidityStatus(acc: Account) { return acc?.validity_status || acc?.overview?.validity_status || 'unknown' }

@@ -125,7 +125,7 @@ class _DummyTaskLogger:
     def add_cashier_url(self, _url: str) -> None:
         return None
 
-    def finish(self, status: str, error: str = "") -> None:
+    def finish(self, status: str, error: str = "", **_kwargs) -> None:
         self.finished = (status, error)
 
 
@@ -1156,6 +1156,185 @@ class VeniceTaskContextTests(unittest.TestCase):
 
 
 
+    def test_execute_register_task_lemondata_requires_resin_when_enabled(self):
+        tasks = _import_tasks_module()
+        logger = _DummyTaskLogger()
+        payload = {
+            "platform": "lemondata",
+            "count": 1,
+            "concurrency": 1,
+            "email": "demo@example.com",
+            "password": "pw",
+            "extra": {},
+        }
+        build_calls: list[object] = []
+
+        class _DummyInventoryRepository:
+            def reset_many(self, *_args, **_kwargs):
+                return None
+
+        class _FakeProxyPool:
+            def get_next(self, region: str = "", exclude_urls=None):
+                return None
+
+            def report_success(self, url: str) -> None:
+                return None
+
+            def report_fail(self, url: str) -> None:
+                return None
+
+        def fake_config_get(key: str, default=""):
+            config = {
+                "resin_enabled": "true",
+                "resin_scheme": "http",
+                "resin_host": "127.0.0.1",
+                "resin_port": "2260",
+                "resin_token": "token-123",
+                "resin_default_platform": "Default",
+            }
+            return config.get(key, default)
+
+        def fake_build_platform_instance(*_args, **_kwargs):
+            build_calls.append(_kwargs.get("resolved_proxy"))
+            raise AssertionError("LemonData Resin 不可用时不应进入注册")
+
+        with patch("core.proxy_pool.proxy_pool", _FakeProxyPool()), patch.object(
+            tasks.config_store,
+            "get",
+            side_effect=fake_config_get,
+        ), patch.object(tasks, "_resolve_register_lines", return_value=[None]), patch.object(
+            tasks,
+            "get",
+            return_value=object(),
+        ), patch.object(tasks, "MailboxInventoryRepository", return_value=_DummyInventoryRepository()), patch.object(
+            tasks,
+            "_build_platform_instance",
+            side_effect=fake_build_platform_instance,
+        ), patch.object(tasks, "_probe_proxy_ip", return_value=""), patch.object(
+            tasks,
+            "save_account",
+            return_value=None,
+        ), patch.object(tasks, "_save_task_log", return_value=None):
+            tasks._execute_register_task(payload, logger)
+
+        self.assertFalse(build_calls)
+        self.assertTrue(any("LemonData Resin 未命中可用 IP" in message for message in logger.messages))
+        self.assertEqual(logger.success_count, 0)
+        self.assertTrue(logger.error_messages)
+
+
+    def test_execute_register_task_retries_lemondata_connection_reset_with_new_resin_session(self):
+        tasks = _import_tasks_module()
+        logger = _DummyTaskLogger()
+        payload = {
+            "platform": "lemondata",
+            "count": 1,
+            "concurrency": 1,
+            "email": "demo@example.com",
+            "password": "pw",
+            "extra": {"lemondata_proxy_retry_attempts": "3"},
+        }
+        used_proxies: list[str | None] = []
+
+        class _DummyInventoryRepository:
+            def reset_many(self, *_args, **_kwargs):
+                return None
+
+        class _FakeProxyPool:
+            def get_next(self, region: str = "", exclude_urls=None):
+                return None
+
+            def report_success(self, url: str) -> None:
+                return None
+
+            def report_fail(self, url: str) -> None:
+                return None
+
+        class _FakePlatform:
+            def __init__(self, resolved_proxy: str | None):
+                self._resolved_proxy = resolved_proxy
+
+            def register(self, email=None, password=None):
+                used_proxies.append(self._resolved_proxy)
+                if self._resolved_proxy and "Default.vs0" in self._resolved_proxy:
+                    raise RuntimeError(
+                        "('Connection aborted.', ConnectionResetError(10054, "
+                        "'远程主机强迫关闭了一个现有的连接。', None, 10054, None))"
+                    )
+                return types.SimpleNamespace(
+                    platform="lemondata",
+                    email=email or "demo@example.com",
+                    token="ld_sk_demo",
+                    extra={"api_key": "ld_sk_demo"},
+                )
+
+        def fake_build_platform_instance(_platform_name, _seed_payload, _logger, resolved_proxy=None):
+            return _FakePlatform(resolved_proxy)
+
+        def fake_config_get(key: str, default=""):
+            config = {
+                "resin_enabled": "true",
+                "resin_scheme": "http",
+                "resin_host": "127.0.0.1",
+                "resin_port": "2260",
+                "resin_token": "token-123",
+                "resin_default_platform": "Default",
+            }
+            return config.get(key, default)
+
+        def fake_probe_ip(proxy_url: str) -> str:
+            if "Default.vs0" in str(proxy_url):
+                return "198.51.100.10"
+            if "Default.vs1" in str(proxy_url):
+                return "198.51.100.11"
+            return "198.51.100.99"
+
+        from contextlib import ExitStack
+
+        with ExitStack() as stack:
+            stack.enter_context(patch("core.proxy_pool.proxy_pool", _FakeProxyPool()))
+            stack.enter_context(patch.object(tasks.config_store, "get", side_effect=fake_config_get))
+            stack.enter_context(patch.object(tasks, "_resolve_register_lines", return_value=[None]))
+            stack.enter_context(patch.object(tasks, "get", return_value=object()))
+            stack.enter_context(patch.object(tasks, "MailboxInventoryRepository", return_value=_DummyInventoryRepository()))
+            stack.enter_context(patch.object(tasks, "_build_platform_instance", side_effect=fake_build_platform_instance))
+            stack.enter_context(patch.object(tasks, "_probe_proxy_ip", side_effect=fake_probe_ip))
+            stack.enter_context(patch.object(tasks, "save_account", return_value=None))
+            stack.enter_context(patch.object(tasks, "_save_task_log", return_value=None))
+            for helper_name in (
+                "_auto_upload_cpa",
+                "_auto_import_codebanana2api",
+                "_auto_import_anuma2api",
+                "_auto_import_enter2api",
+                "_auto_import_blendspace2api",
+                "_auto_export_fireworks_key",
+                "_auto_export_gettoken_key",
+                "_auto_export_lemondata_key",
+                "_auto_export_zo_key",
+                "_auto_push_zo_twoapi",
+                "_auto_push_swarms_twoapi",
+                "_auto_push_anycap_twoapi",
+                "_auto_export_swarms_key",
+                "_auto_export_anycap_key",
+                "_auto_export_featherless_key",
+                "_auto_export_jiekou_key",
+            ):
+                stack.enter_context(patch.object(tasks, helper_name, return_value=None))
+            stack.enter_context(patch.object(tasks.time, "sleep", return_value=None))
+            tasks._execute_register_task(payload, logger)
+
+        self.assertEqual(
+            used_proxies,
+            [
+                "http://Default.vs0:token-123@127.0.0.1:2260",
+                "http://Default.vs1:token-123@127.0.0.1:2260",
+            ],
+        )
+        self.assertEqual(logger.success_count, 1)
+        self.assertTrue(any("LemonData 代理连接异常，换 IP 重试 2/3" in message for message in logger.messages))
+        self.assertTrue(any("Resin IP 198.51.100.10 banned" in message for message in logger.messages))
+
+
     def test_execute_register_task_uses_distinct_resin_sessions_for_swarms_concurrency(self):
         tasks = _import_tasks_module()
         logger = _DummyTaskLogger()
@@ -1330,6 +1509,92 @@ class VeniceTaskContextTests(unittest.TestCase):
         )
         self.assertEqual(used_proxies, ["http://Default.vs1:token-123@127.0.0.1:2260"])
         self.assertTrue(any("Swarms 注册页预检失败" in message for message in logger.messages))
+
+    def test_execute_register_task_stops_swarms_resin_after_repeated_ip_probe_failures(self):
+        tasks = _import_tasks_module()
+        logger = _DummyTaskLogger()
+        payload = {
+            "platform": "swarms",
+            "count": 1,
+            "concurrency": 1,
+            "email": "demo@example.com",
+            "password": "pw",
+            "extra": {},
+        }
+        used_proxies: list[str | None] = []
+
+        class _DummyInventoryRepository:
+            def reset_many(self, *_args, **_kwargs):
+                return None
+
+        class _FakeProxyPool:
+            def get_next(self, region: str = "", exclude_urls=None):
+                return None
+
+            def report_success(self, url: str) -> None:
+                return None
+
+            def report_fail(self, url: str) -> None:
+                return None
+
+        class _FakePlatform:
+            def __init__(self, resolved_proxy: str | None):
+                self._resolved_proxy = resolved_proxy
+
+            def register(self, email=None, password=None):
+                used_proxies.append(self._resolved_proxy)
+                return types.SimpleNamespace(email=email or "demo@example.com", extra={})
+
+        def fake_build_platform_instance(_platform_name, _seed_payload, _logger, resolved_proxy=None):
+            return _FakePlatform(resolved_proxy)
+
+        def fake_config_get(key: str, default=""):
+            config = {
+                "resin_enabled": "true",
+                "resin_scheme": "http",
+                "resin_host": "127.0.0.1",
+                "resin_port": "2260",
+                "resin_token": "token-123",
+                "resin_default_platform": "Default",
+            }
+            return config.get(key, default)
+
+        probe_calls: list[str] = []
+
+        def fake_probe_ip(proxy_url: str) -> str:
+            probe_calls.append(proxy_url)
+            return ""
+
+        with patch("core.proxy_pool.proxy_pool", _FakeProxyPool()), patch.object(
+            tasks.config_store,
+            "get",
+            side_effect=fake_config_get,
+        ), patch.object(tasks, "_resolve_register_lines", return_value=[None]), patch.object(
+            tasks,
+            "get",
+            return_value=object(),
+        ), patch.object(tasks, "MailboxInventoryRepository", return_value=_DummyInventoryRepository()), patch.object(
+            tasks,
+            "_build_platform_instance",
+            side_effect=fake_build_platform_instance,
+        ), patch.object(tasks, "_probe_proxy_ip", side_effect=fake_probe_ip), patch.object(
+            tasks,
+            "_probe_swarms_signup_page",
+            return_value=False,
+        ), patch.object(tasks, "save_account", return_value=None), patch.object(
+            tasks,
+            "_save_task_log",
+            return_value=None,
+        ), patch.object(tasks, "_auto_upload_cpa", return_value=None), patch.object(
+            tasks,
+            "_auto_import_codebanana2api",
+            return_value=None,
+        ):
+            tasks._execute_register_task(payload, logger)
+
+        self.assertEqual(len(probe_calls), 3)
+        self.assertEqual(used_proxies, [None])
+        self.assertTrue(any("连续 3 次 IP 探测失败" in message for message in logger.messages))
 
     def test_execute_register_task_recycles_outlook_inventory_on_swarms_proxy_failure(self):
         tasks = _import_tasks_module()

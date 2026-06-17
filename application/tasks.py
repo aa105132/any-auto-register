@@ -75,6 +75,7 @@ ACTIVE_TASK_STATUSES = {
 _INVENTORY_REUSE_LIMIT = 4
 _VENICE_PROXY_SUCCESS_LIMIT = 3
 _ATXP_IP_SUCCESS_LIMIT = 1
+_AIROUTER_IP_SUCCESS_LIMIT = 3
 _ALIAS_CHARSET = string.ascii_lowercase + string.digits
 
 _task_locks: dict[str, threading.Lock] = {}
@@ -82,7 +83,9 @@ _task_locks_guard = threading.Lock()
 _scdn_runtime_proxy_source = ScdnRuntimeProxySource()
 
 _venice_proxy_successes: dict[str, int] = {}
-_venice_proxy_successes_lock = threading.Lock()
+# AI-ROUTER 会在代理选择流程里做 IP 预占，部分调用点已经持有该锁；
+# 使用 RLock 避免同线程二次进入时卡死。
+_venice_proxy_successes_lock = threading.RLock()
 _venice_resin_slot = [0]
 _venice_resin_ip_successes: dict[str, int] = {}
 _venice_resin_ip_banned: set[str] = set()
@@ -93,6 +96,8 @@ _venice_decodo_slot = [0]
 _venice_decodo_port_to_ip: dict[int, str] = {}
 _venice_brightdata_slot = [0]
 _venice_brightdata_session_to_ip: dict[int, str] = {}
+_airouter_ip_successes: dict[str, int] = {}
+_airouter_ip_inflight: set[str] = set()
 
 
 def _warm_resin_ip_state() -> None:
@@ -110,9 +115,29 @@ def _warm_resin_ip_state() -> None:
                 if m:
                     _venice_resin_ip_banned.add(m.group(1))
 
+
             ip_pat = _re.compile(r"Resin slot (vs\d+): IP (\S+) \(\d+/3\)")
             success_pat = _re.compile(r"注册成功")
             tasks_with_resin: dict[str, list[str]] = {}
+
+            # AI-ROUTER 旧版曾写入 “banned” 日志；新版规则改为每个 IP 可成功 3 个账号，
+            # 因此这里不再预热旧 banned 记录，等价于释放历史误拉黑 IP。
+            airouter_success_pat = _re.compile(r"AI-ROUTER IP (\S+) \((\d+)/3\)")
+            airouter_success_rows = s.exec(
+                select(TaskEventModel).where(
+                    TaskEventModel.message.like("%AI-ROUTER IP%")
+                )
+            ).all()
+            for row in airouter_success_rows:
+                m = airouter_success_pat.search(row.message)
+                if m:
+                    try:
+                        _airouter_ip_successes[m.group(1)] = max(
+                            _airouter_ip_successes.get(m.group(1), 0),
+                            min(int(m.group(2)), _AIROUTER_IP_SUCCESS_LIMIT),
+                        )
+                    except Exception:
+                        pass
             slot_events = s.exec(
                 select(TaskEventModel).where(
                     TaskEventModel.message.like("%Resin slot%IP%")
@@ -738,6 +763,137 @@ def _resolve_freemodel_chain_concurrency(platform_name: str, concurrency: int, l
                 pass
         return 1
     return resolved
+
+
+# === 通用邀请码链式注册（配置驱动；freemodel 保留专用函数以兼容既有测试）===
+# field: 注入注册参数 extra 的字段名；keys: 从账号 extra / overview summary 提取邀请码的键；
+# lifecycle: 跨任务查最新号时的 lifecycle_status 过滤（空=不过滤）。
+_INVITE_CHAIN_CONFIG: dict[str, dict[str, Any]] = {
+    "vellum": {"field": "vellum_invite_code", "keys": ("own_invite_code",), "lifecycle": ""},
+}
+
+
+def _generic_chain_config(platform_name: str) -> dict[str, Any] | None:
+    return _INVITE_CHAIN_CONFIG.get(str(platform_name or "").strip().lower())
+
+
+def _latest_generic_referral_code(platform_name: str) -> str:
+    """读取最近一个已注册账号的邀请码（summary 或 legacy_extra），作为新任务链头。"""
+    cfg = _generic_chain_config(platform_name)
+    if not cfg:
+        return ""
+    platform_key = str(platform_name or "").strip().lower()
+    with Session(engine) as session:
+        query = (
+            select(AccountOverviewModel, AccountModel)
+            .join(AccountModel, AccountOverviewModel.account_id == AccountModel.id)
+            .where(AccountModel.platform == platform_key)
+        )
+        if cfg["lifecycle"]:
+            query = query.where(AccountOverviewModel.lifecycle_status == cfg["lifecycle"])
+        rows = session.exec(query.order_by(AccountModel.id.desc()).limit(20)).all()
+    for overview, _account in rows:
+        try:
+            summary = overview.get_summary()
+        except Exception:
+            summary = {}
+        legacy_extra = dict(summary.get("legacy_extra") or {})
+        for key in cfg["keys"]:
+            code = str(summary.get(key) or legacy_extra.get(key) or "").strip()
+            if code:
+                return code
+    return ""
+
+
+def _resolve_generic_initial_invite_code(platform_name: str, extra: dict[str, Any]) -> str:
+    cfg = _generic_chain_config(platform_name)
+    if not cfg:
+        return ""
+    src = dict(extra or {})
+    configured = str(src.get(cfg["field"]) or src.get("invite_code") or "").strip()
+    return configured or _latest_generic_referral_code(platform_name)
+
+
+def _apply_generic_chain_invite(platform_name: str, extra: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
+    """并发安全：从邀请码池取最新可用码注入注册参数（无则回退 extra 内配置/默认）。"""
+    cfg = _generic_chain_config(platform_name)
+    resolved = dict(extra or {})
+    if not cfg:
+        return resolved
+    codes = state.get("codes") or []
+    invite_code = str(
+        (codes[-1] if codes else "")
+        or resolved.get(cfg["field"])
+        or resolved.get("invite_code")
+        or ""
+    ).strip()
+    if invite_code:
+        resolved[cfg["field"]] = invite_code
+    return resolved
+
+
+def _extract_generic_next_invite_code(platform_name: str, account: Any) -> str:
+    cfg = _generic_chain_config(platform_name)
+    if not cfg:
+        return ""
+    extra = dict(getattr(account, "extra", {}) or {})
+    for key in cfg["keys"]:
+        val = str(extra.get(key) or "").strip()
+        if val:
+            return val
+    return ""
+
+
+# --- 统一 dispatcher：注册循环调用，按平台路由到 freemodel 专用或通用实现 ---
+def _chain_invite_enabled(platform_name: str) -> bool:
+    return _is_freemodel_platform(platform_name) or _generic_chain_config(platform_name) is not None
+
+
+def _chain_apply_invite(platform_name: str, extra: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
+    if _is_freemodel_platform(platform_name):
+        return _apply_freemodel_chain_invite(platform_name, extra, state)
+    return _apply_generic_chain_invite(platform_name, extra, state)
+
+
+def _chain_extract_next_invite(platform_name: str, account: Any) -> str:
+    if _is_freemodel_platform(platform_name):
+        return _extract_freemodel_next_invite_code(account)
+    return _extract_generic_next_invite_code(platform_name, account)
+
+
+def _chain_resolve_concurrency(platform_name: str, concurrency: int, logger: Any | None = None) -> int:
+    # freemodel 维持严格串行；通用(vellum)用邀请码池，支持并发，不再强制降并发。
+    if _is_freemodel_platform(platform_name):
+        return _resolve_freemodel_chain_concurrency(platform_name, concurrency, logger)
+    return max(int(concurrency or 1), 1)
+
+
+def _chain_init_state(platform_name: str, extra: dict[str, Any]) -> dict[str, Any]:
+    """初始化链式状态。freemodel: 串行单值 next_invite_code；通用: 并发邀请码池 codes(种子=最新已注册号/配置码)。"""
+    if _is_freemodel_platform(platform_name):
+        return {"next_invite_code": _resolve_freemodel_initial_invite_code(platform_name, extra)}
+    seed = _resolve_generic_initial_invite_code(platform_name, extra)
+    return {"codes": [seed] if seed else []}
+
+
+def _chain_state_initial_code(platform_name: str, state: dict[str, Any]) -> str:
+    if _is_freemodel_platform(platform_name):
+        return str(state.get("next_invite_code") or "")
+    codes = state.get("codes") or []
+    return str(codes[-1]) if codes else ""
+
+
+def _chain_record_success(platform_name: str, account: Any, state: dict[str, Any]) -> str:
+    """注册成功后登记本号邀请码供后续号链式使用。freemodel 覆盖单值；通用追加进池。需在锁内调用。"""
+    code = _chain_extract_next_invite(platform_name, account)
+    if not code:
+        return ""
+    if _is_freemodel_platform(platform_name):
+        state["next_invite_code"] = code
+    else:
+        state.setdefault("codes", []).append(code)
+    return code
+
 
 def _derive_partial_lifecycle(result: Any | None, error: str) -> str:
     metadata = dict(getattr(result, "metadata", {}) or {})
@@ -1784,6 +1940,135 @@ def _auto_push_anycap_twoapi(task_logger: TaskLogger, account, task_extra: dict[
         task_logger.log(f"  [AnyCap2API] 自动推送异常: {exc}", level="warning")
 
 
+def _build_thesys_twoapi_record_from_account(account: Any, *, source: str = "registration") -> dict[str, Any]:
+    if str(getattr(account, "platform", "") or "").strip().lower() != "thesys":
+        return {}
+    extra = dict(getattr(account, "extra", {}) or {})
+    api_key = str(extra.get("api_key") or extra.get("ai_api_token") or getattr(account, "token", "") or "").strip()
+    if not api_key:
+        return {}
+    record: dict[str, Any] = {
+        "email": str(getattr(account, "email", "") or extra.get("email", "") or "").strip(),
+        "password": str(getattr(account, "password", "") or extra.get("password", "") or ""),
+        "user_id": str(getattr(account, "user_id", "") or extra.get("user_id") or ""),
+        "api_key": api_key,
+        "ai_api_token": api_key,
+        "base_url": str(extra.get("openai_compatible_api_base") or extra.get("llm_api_base") or extra.get("api_base") or "https://api.thesys.dev/v1/embed").strip(),
+        "openai_base_url": str(extra.get("openai_compatible_api_base") or extra.get("llm_api_base") or extra.get("api_base") or "https://api.thesys.dev/v1/embed").strip(),
+        "credit_amount": float(extra.get("credit_amount") or 100.0),
+        "native_thesys": True,
+        "openai_compatible": True,
+        "free_models": extra.get("free_models") if isinstance(extra.get("free_models"), list) else [],
+        "ok": True,
+        "source": str(source or "registration"),
+        "import_source": str(source or "registration"),
+        "saved_at": int(time.time()),
+    }
+    for key in ("api_key_info", "api_verification", "chat_verification", "billing", "user", "org", "orgs", "account_overview"):
+        value = extra.get(key)
+        if value not in (None, "", {}, []):
+            record[key] = value
+    return record if record.get("email") else {}
+
+
+def _auto_push_thesys_twoapi(task_logger: TaskLogger, account, task_extra: dict[str, Any] | None = None) -> None:
+    if str(getattr(account, "platform", "") or "").strip().lower() != "thesys":
+        return
+    extra = dict(task_extra or {})
+    mode = str(extra.get("twoapi_push_mode") or "none").strip().lower()
+    if mode in {"", "none", "off", "disabled", "false", "0"}:
+        return
+    if mode not in {"local", "remote"}:
+        task_logger.log(f"  [Thesys2API] 未知推送模式: {mode}", level="warning")
+        return
+    record = _build_thesys_twoapi_record_from_account(account, source=f"registration-{mode}")
+    if not record:
+        task_logger.log("  [Thesys2API] 没有可导入的 Thesys 账号记录", level="warning")
+        return
+    try:
+        from services.twoapi.manager import get_twoapi_manager
+
+        manager = get_twoapi_manager()
+        if mode == "local":
+            result = manager.import_plugin_accounts("thesys", records=[record], source="registration-local")
+            imported = result.get("imported", result.get("created", 0))
+            updated = result.get("updated", 0)
+            task_logger.log(f"  [Thesys2API] 本地导入完成: imported={imported} updated={updated}")
+            return
+        target_url = str(extra.get("twoapi_push_target_url") or "").strip()
+        if not target_url:
+            task_logger.log("  [Thesys2API] 远端推送已跳过: 未填写远端 2API 后端地址", level="warning")
+            return
+        plugin = manager.get_plugin("thesys")
+        import_url = plugin._push_target_import_url(target_url)
+        response = plugin.transport.post(
+            import_url,
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            json={"source": "registration-remote", "records": [record]},
+            timeout=max(1.0, float(extra.get("twoapi_push_timeout") or 30.0)),
+        )
+        try:
+            data = response.json()
+        except Exception:
+            data = {"raw": str(getattr(response, "text", "") or "")[:500]}
+        if not getattr(response, "ok", False):
+            raise RuntimeError(f"status={getattr(response, 'status_code', 0)} body={str(data)[:300]}")
+        task_logger.log(f"  [Thesys2API] 远端推送完成: pushed=1 target={import_url}")
+    except Exception as exc:
+        task_logger.log(f"  [Thesys2API] 自动推送异常: {exc}", level="warning")
+
+
+def _auto_export_thesys_key(task_logger: TaskLogger, account) -> None:
+    if getattr(account, "platform", "") != "thesys":
+        return
+    extra = account.extra or {}
+    api_key = str(extra.get("api_key", "") or extra.get("ai_api_token", "") or account.token or "").strip()
+    if not api_key:
+        task_logger.log("  [Thesys] 没有可导出的 API key", level="warning")
+        return
+    try:
+        from pathlib import Path
+        import json
+
+        output_dir = Path("output")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        keys_path = output_dir / "thesys_keys.txt"
+        credentials_path = output_dir / "thesys_credentials.json"
+
+        with keys_path.open("a", encoding="utf-8") as handle:
+            handle.write(f"{getattr(account, 'email', '')}|{api_key}\n")
+
+        try:
+            existing = json.loads(credentials_path.read_text(encoding="utf-8")) if credentials_path.exists() else []
+        except Exception:
+            existing = []
+        rows = [item for item in existing if isinstance(item, dict)] if isinstance(existing, list) else []
+        rows.append({
+            "email": getattr(account, "email", "") or "thesys-auto@local",
+            "password": getattr(account, "password", "") or "",
+            "user_id": getattr(account, "user_id", "") or str(extra.get("user_id", "") or ""),
+            "api_key": api_key,
+            "ai_api_token": api_key,
+            "source": "registration_auto_export",
+            "openai_base_url": "https://api.thesys.dev/v1/embed",
+            "free_models": extra.get("free_models") if isinstance(extra.get("free_models"), list) else [],
+            "credit_amount": 100.0,
+            "ok": True,
+        })
+        deduped = []
+        seen = set()
+        for row in rows:
+            key = str(row.get("api_key") or row.get("ai_api_token") or row.get("token") or "").strip()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            deduped.append(row)
+        credentials_path.write_text(json.dumps(deduped, ensure_ascii=False, indent=2), encoding="utf-8")
+        task_logger.log(f"  [Thesys] API key saved to {credentials_path}")
+    except Exception as exc:
+        task_logger.log(f"  [Thesys] API key write failed: {exc}", level="warning")
+
+
 def _auto_export_anycap_key(task_logger: TaskLogger, account) -> None:
     if getattr(account, "platform", "") != "anycap":
         return
@@ -1880,22 +2165,64 @@ def _auto_export_jiekou_key(task_logger: TaskLogger, account) -> None:
 
 def _probe_proxy_ip(proxy_url: str) -> str:
     import requests as _req
+    session = _req.Session()
+    session.trust_env = False
     proxies = {"http": proxy_url, "https": proxy_url}
     for url in ("https://api.ipify.org", "https://ifconfig.me/ip", "https://ip.decodo.com/json", "https://httpbin.org/ip"):
         try:
-            resp = _req.get(url, proxies=proxies, timeout=10)
+            resp = session.get(url, proxies=proxies, timeout=10)
             text = resp.text.strip()
             if "origin" in text:
                 import json as _json
                 text = _json.loads(text).get("origin", "").split(",")[0].strip()
-            if "ip" in text[:5] and "{" in text:
+            if text.startswith("{") and "ip" in text:
                 import json as _json
-                text = _json.loads(text).get("ip", "").strip()
-            if text and "." in text:
+                parsed = _json.loads(text)
+                for key in ("ip", "origin"):
+                    value = str(parsed.get(key) or "").strip()
+                    if value:
+                        text = value.split(",")[0].strip()
+                        break
+            if text and "." in text and len(text) < 64 and not text.startswith("{"):
                 return text
         except Exception:
             continue
     return ""
+
+
+def _probe_resin_ip(proxy_url: str) -> str:
+    # 历史命名兼容：Resin/Decodo/BrightData 都用同一出口 IP 探测逻辑。
+    return _probe_proxy_ip(proxy_url)
+
+
+def _probe_airouter_proxy_routes(proxy_url: str) -> tuple[bool, str]:
+    """AI-ROUTER 专用预检：IP 可用不代表目标站和 API 都可达。"""
+    import requests as _req
+    if not proxy_url:
+        return False, "empty_proxy"
+    session = _req.Session()
+    session.trust_env = False
+    proxies = {"http": proxy_url, "https": proxy_url}
+    checks = (
+        ("register", "https://ai-router.dev/register"),
+        ("api_settings", "https://api.ai-router.dev/api/v1/settings/public"),
+    )
+    for label, url in checks:
+        try:
+            resp = session.get(
+                url,
+                proxies=proxies,
+                timeout=20,
+                headers={
+                    "Accept": "text/html,application/json,*/*",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126 Safari/537.36",
+                },
+            )
+            if int(getattr(resp, "status_code", 0) or 0) >= 500:
+                return False, f"{label}_status_{resp.status_code}"
+        except Exception as exc:
+            return False, f"{label}_{type(exc).__name__}: {str(exc)[:120]}"
+    return True, "ok"
 
 
 def _probe_swarms_signup_page(proxy_url: str) -> bool:
@@ -1915,7 +2242,18 @@ def _probe_swarms_signup_page(proxy_url: str) -> bool:
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             },
         )
-        return int(getattr(resp, "status_code", 0) or 0) < 400 and "signin" in str(getattr(resp, "url", "") or "signin")
+        body = str(getattr(resp, "text", "") or "")
+        status_code = int(getattr(resp, "status_code", 0) or 0)
+        if status_code in (403, 429) and (
+            "Vercel Security Checkpoint" in body
+            or "Security Checkpoint" in body
+            or "无法验证您的浏览器" in body
+            or "正在验证您的浏览器" in body
+        ):
+            # 当前协议注册已经支持在 Vercel Security Checkpoint 下回退 Supabase Auth。
+            # 这里的预检只判断目标 CONNECT 是否可达，不能把 checkpoint 当作代理不可用。
+            return True
+        return status_code < 400 and "signin" in str(getattr(resp, "url", "") or "signin")
     except Exception:
         return False
 
@@ -2155,14 +2493,13 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
     count = len(seeds)
     concurrency = min(max(int(payload.get("concurrency", 1) or 1), 1), count)
     platform_name = str(payload.get("platform", ""))
-    concurrency = _resolve_freemodel_chain_concurrency(platform_name, concurrency, logger)
+    concurrency = _chain_resolve_concurrency(platform_name, concurrency, logger)
     payload_extra = dict(payload.get("extra") or {})
-    freemodel_invite_state = {
-        "next_invite_code": _resolve_freemodel_initial_invite_code(platform_name, payload_extra)
-    }
-    if _is_freemodel_platform(platform_name) and freemodel_invite_state["next_invite_code"]:
-        logger.log(f"FreeModel 初始邀请码: {freemodel_invite_state['next_invite_code']}")
-    freemodel_invite_lock = threading.Lock()
+    chain_invite_state = _chain_init_state(platform_name, payload_extra)
+    _initial_chain_code = _chain_state_initial_code(platform_name, chain_invite_state)
+    if _chain_invite_enabled(platform_name) and _initial_chain_code:
+        logger.log(f"{platform_name} 初始邀请码: {_initial_chain_code}")
+    chain_invite_lock = threading.Lock()
     default_email = payload.get("email") or None
     default_password = payload.get("password") or None
     proxy = payload.get("proxy") or None
@@ -2176,6 +2513,8 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
     venice_resin_ip_successes = _venice_resin_ip_successes
     venice_resin_ip_banned = _venice_resin_ip_banned
     venice_resin_slot_to_ip = _venice_resin_slot_to_ip
+    airouter_ip_successes = _airouter_ip_successes
+    airouter_ip_inflight = _airouter_ip_inflight
 
     logger.set_progress(0, count)
 
@@ -2188,6 +2527,87 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
 
     success = 0
     errors: list[str] = []
+
+    def _is_airouter_platform() -> bool:
+        return platform_name == "airouter"
+
+    def _airouter_ip_used_count(ip: str) -> int:
+        return int(airouter_ip_successes.get(ip, 0) or 0) if ip else 0
+
+    def _claim_airouter_ip(ip: str, label: str = "AI-ROUTER") -> bool:
+        """为一次 AI-ROUTER 注册预占出口 IP；同一 IP 最多成功 3 个账号。"""
+        if not ip:
+            return False
+        with venice_proxy_successes_lock:
+            used = _airouter_ip_used_count(ip)
+            if used >= _AIROUTER_IP_SUCCESS_LIMIT:
+                logger.log(
+                    f"{label}: IP {ip} already used for AI-ROUTER "
+                    f"({used}/{_AIROUTER_IP_SUCCESS_LIMIT}), skipping"
+                )
+                return False
+            if ip in airouter_ip_inflight:
+                logger.log(f"{label}: IP {ip} is AI-ROUTER-inflight, skipping")
+                return False
+            airouter_ip_inflight.add(ip)
+            return True
+
+    def _release_airouter_ip(ip: str) -> None:
+        if not ip:
+            return
+        with venice_proxy_successes_lock:
+            airouter_ip_inflight.discard(ip)
+
+    def _record_airouter_ip_success(ip: str) -> None:
+        if not ip:
+            return
+        with venice_proxy_successes_lock:
+            airouter_ip_inflight.discard(ip)
+            current = min(_airouter_ip_used_count(ip) + 1, _AIROUTER_IP_SUCCESS_LIMIT)
+            airouter_ip_successes[ip] = current
+        logger.log(f"AI-ROUTER IP {ip} ({current}/{_AIROUTER_IP_SUCCESS_LIMIT})")
+        if current >= _AIROUTER_IP_SUCCESS_LIMIT:
+            logger.log(f"AI-ROUTER IP {ip} reached {_AIROUTER_IP_SUCCESS_LIMIT}/{_AIROUTER_IP_SUCCESS_LIMIT}, will use new IP next")
+
+    def _mark_airouter_ip_exhausted(ip: str, reason: str = "") -> None:
+        if not ip:
+            return
+        with venice_proxy_successes_lock:
+            airouter_ip_inflight.discard(ip)
+            airouter_ip_successes[ip] = _AIROUTER_IP_SUCCESS_LIMIT
+        suffix = f" ({reason})" if reason else ""
+        logger.log(f"AI-ROUTER IP {ip} exhausted ({_AIROUTER_IP_SUCCESS_LIMIT}/{_AIROUTER_IP_SUCCESS_LIMIT}){suffix}")
+
+    def _is_airouter_balance_insufficient_error(error: str) -> bool:
+        return "注册余额不足" in error or ("balance=" in error and "required>=" in error)
+
+    def _is_retryable_proxy_error(error: str) -> bool:
+        if not error:
+            return False
+        text = error.lower()
+        retry_tokens = (
+            "connectionreseterror",
+            "connection reset",
+            "connection aborted",
+            "远程主机强迫关闭",
+            "10054",
+            "proxyerror",
+            "502 bad gateway",
+            "tunnel connection failed",
+            "unexpected_eof_while_reading_eof",
+            "unexpected_eof_while_reading",
+            "sslerror",
+            "route precheck failed",
+            "net::err_connection_reset",
+            "net::err_tunnel_connection_failed",
+        )
+        return any(token in text for token in retry_tokens)
+
+    def _is_airouter_retryable_proxy_error(error: str) -> bool:
+        return _is_retryable_proxy_error(error)
+
+    def _is_lemondata_retryable_proxy_error(error: str) -> bool:
+        return _is_retryable_proxy_error(error)
 
     def _mark_inventory_processed(item_id: int) -> None:
         if item_id <= 0:
@@ -2218,9 +2638,17 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
             if not ip:
                 logger.log(f"Resin slot vs{slot}: IP probe failed, skipping")
                 continue
+            if _is_airouter_platform():
+                routes_ok, route_reason = _probe_airouter_proxy_routes(proxy_url)
+                if not routes_ok:
+                    logger.log(f"Resin slot vs{slot}: AI-ROUTER route precheck failed ({route_reason}), skipping", level="warning")
+                    continue
             with venice_proxy_successes_lock:
                 venice_resin_slot_to_ip[slot] = ip
-                if platform_name == "atxp":
+                if _is_airouter_platform():
+                    if not _claim_airouter_ip(ip, f"Resin slot vs{slot}"):
+                        continue
+                elif platform_name == "atxp":
                     if ip in _atxp_ip_banned:
                         logger.log(f"Resin slot vs{slot}: IP {ip} is ATXP-banned, skipping")
                         continue
@@ -2236,7 +2664,9 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
                     if used >= _VENICE_PROXY_SUCCESS_LIMIT:
                         logger.log(f"Resin slot vs{slot}: IP {ip} already used {used}/{_VENICE_PROXY_SUCCESS_LIMIT}, skipping")
                         continue
-            if platform_name == "atxp":
+            if _is_airouter_platform():
+                logger.log(f"Resin slot vs{slot}: AI-ROUTER IP {ip} ({_airouter_ip_used_count(ip)}/{_AIROUTER_IP_SUCCESS_LIMIT})")
+            elif platform_name == "atxp":
                 logger.log(f"Resin slot vs{slot}: IP {ip} ({_atxp_ip_successes.get(ip, 0)}/{_ATXP_IP_SUCCESS_LIMIT})")
             else:
                 logger.log(f"Resin slot vs{slot}: IP {ip} ({venice_resin_ip_successes.get(ip, 0)}/{_VENICE_PROXY_SUCCESS_LIMIT})")
@@ -2295,9 +2725,17 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
                     return None, -1, ""
                 continue
             consecutive_probe_failures = 0
+            if _is_airouter_platform():
+                routes_ok, route_reason = _probe_airouter_proxy_routes(proxy_url)
+                if not routes_ok:
+                    logger.log(f"Decodo slot {slot}: AI-ROUTER route precheck failed ({route_reason}), skipping", level="warning")
+                    continue
             with venice_proxy_successes_lock:
                 venice_decodo_port_to_ip[slot] = ip
-                if platform_name == "atxp":
+                if _is_airouter_platform():
+                    if not _claim_airouter_ip(ip, f"Decodo slot {slot}"):
+                        continue
+                elif platform_name == "atxp":
                     if ip in _atxp_ip_banned:
                         logger.log(f"Decodo slot {slot}: IP {ip} is ATXP-banned, skipping")
                         continue
@@ -2313,7 +2751,9 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
                     if used >= _VENICE_PROXY_SUCCESS_LIMIT:
                         logger.log(f"Decodo slot {slot}: IP {ip} already used {used}/{_VENICE_PROXY_SUCCESS_LIMIT}, skipping")
                         continue
-            if platform_name == "atxp":
+            if _is_airouter_platform():
+                logger.log(f"Decodo slot {slot}: AI-ROUTER IP {ip} ({_airouter_ip_used_count(ip)}/{_AIROUTER_IP_SUCCESS_LIMIT})")
+            elif platform_name == "atxp":
                 logger.log(f"Decodo slot {slot}: IP {ip} ({_atxp_ip_successes.get(ip, 0)}/{_ATXP_IP_SUCCESS_LIMIT})")
             else:
                 logger.log(f"Decodo slot {slot}: IP {ip} ({venice_resin_ip_successes.get(ip, 0)}/{_VENICE_PROXY_SUCCESS_LIMIT})")
@@ -2355,9 +2795,17 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
                     return None, -1, ""
                 continue
             consecutive_probe_failures = 0
+            if _is_airouter_platform():
+                routes_ok, route_reason = _probe_airouter_proxy_routes(proxy_url)
+                if not routes_ok:
+                    logger.log(f"BrightData slot {slot}: AI-ROUTER route precheck failed ({route_reason}), skipping", level="warning")
+                    continue
             with venice_proxy_successes_lock:
                 venice_brightdata_session_to_ip[slot] = ip
-                if platform_name == "atxp":
+                if _is_airouter_platform():
+                    if not _claim_airouter_ip(ip, f"BrightData slot {slot}"):
+                        continue
+                elif platform_name == "atxp":
                     if ip in _atxp_ip_banned:
                         logger.log(f"BrightData slot {slot}: IP {ip} is ATXP-banned, skipping")
                         continue
@@ -2373,7 +2821,9 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
                     if used >= _VENICE_PROXY_SUCCESS_LIMIT:
                         logger.log(f"BrightData slot {slot}: IP {ip} already used {used}/{_VENICE_PROXY_SUCCESS_LIMIT}, skipping")
                         continue
-            if platform_name == "atxp":
+            if _is_airouter_platform():
+                logger.log(f"BrightData slot {slot}: AI-ROUTER IP {ip} ({_airouter_ip_used_count(ip)}/{_AIROUTER_IP_SUCCESS_LIMIT})")
+            elif platform_name == "atxp":
                 logger.log(f"BrightData slot {slot}: IP {ip} ({_atxp_ip_successes.get(ip, 0)}/{_ATXP_IP_SUCCESS_LIMIT})")
             else:
                 logger.log(f"BrightData slot {slot}: IP {ip} ({venice_resin_ip_successes.get(ip, 0)}/{_VENICE_PROXY_SUCCESS_LIMIT})")
@@ -2383,23 +2833,53 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
 
     def _resolve_task_proxy(worker_index: int = 0) -> tuple[str | None, str, str]:
         if proxy:
+            if _is_airouter_platform():
+                payload_ip = _probe_proxy_ip(proxy)
+                if not payload_ip:
+                    raise RuntimeError("任务内代理 IP 探测失败，AI-ROUTER 无法做 IP 黑名单判断，请更换代理或使用代理池")
+                routes_ok, route_reason = _probe_airouter_proxy_routes(proxy)
+                if not routes_ok:
+                    raise RuntimeError(f"任务内代理 AI-ROUTER route precheck failed: {route_reason}")
+                if not _claim_airouter_ip(payload_ip, "任务内代理"):
+                    raise RuntimeError(f"任务内代理 IP {payload_ip} 已被 AI-ROUTER 拉黑或正在注册，请更换代理")
+                logger.log(f"代理来源: 任务内代理 IP {payload_ip or '-'}")
+                return proxy, "payload", payload_ip
             logger.log("代理来源: 任务内代理")
             return proxy, "payload", ""
         resin_enabled = _is_truthy_config(config_store.get("resin_enabled", "false"))
         if resin_enabled:
-            if platform_name == "venice":
+            if platform_name in {"venice", "airouter"}:
                 resin_proxy, _slot, resin_ip = _pick_resin_proxy_with_ip_check()
             else:
                 resin_proxy, resin_ip = None, ""
-                max_resin_attempts = 8 if platform_name == "swarms" else 1
+                max_resin_attempts = 8 if platform_name in {"swarms", "lemondata"} else 1
+                resin_ip_probe_failures = 0
                 for attempt in range(max_resin_attempts):
                     # Swarms 对同一 Resin 会话/IP 限制明显；无论是否并发都使用独立 session 用户名 Default.vsN，
                     # 并在注册前直连目标注册页预检，避免 api.ipify 可用但 swarms.world CONNECT 504。
-                    resin_account = f"vs{worker_index + attempt}" if platform_name == "swarms" else ""
+                    resin_account = f"vs{worker_index + attempt}" if platform_name in {"swarms", "lemondata"} else ""
                     candidate_proxy = _get_resin_proxy_url(platform_name, account=resin_account)
                     candidate_ip = _probe_proxy_ip(candidate_proxy) if candidate_proxy else ""
                     if candidate_proxy and not candidate_ip:
-                        logger.log("Resin IP probe failed, skipping", level="warning")
+                        resin_ip_probe_failures += 1
+                        if platform_name == "swarms":
+                            logger.log(
+                                f"Resin session {resin_account or 'Default'} IP probe failed ({resin_ip_probe_failures}/3), skipping",
+                                level="warning",
+                            )
+                            if resin_ip_probe_failures >= 3:
+                                logger.log("Swarms Resin 连续 3 次 IP 探测失败，跳过 Resin，尝试后续代理来源/直连", level="warning")
+                                break
+                        else:
+                            logger.log("Resin IP probe failed, skipping", level="warning")
+                        continue
+                    resin_ip_probe_failures = 0
+                    if platform_name == "lemondata" and candidate_ip in venice_resin_ip_banned:
+                        logger.log(f"LemonData Resin session {resin_account or 'Default'} IP {candidate_ip} is banned, skipping")
+                        continue
+                    if platform_name == "lemondata" and venice_resin_ip_successes.get(candidate_ip, 0) >= _VENICE_PROXY_SUCCESS_LIMIT:
+                        used = venice_resin_ip_successes.get(candidate_ip, 0)
+                        logger.log(f"LemonData Resin session {resin_account or 'Default'} IP {candidate_ip} already used {used}/{_VENICE_PROXY_SUCCESS_LIMIT}, skipping")
                         continue
                     if platform_name == "swarms" and candidate_proxy and not _probe_swarms_signup_page(candidate_proxy):
                         logger.log(f"Swarms 注册页预检失败，跳过 Resin session {resin_account or 'Default'}", level="warning")
@@ -2411,6 +2891,10 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
                     logger.log(f"Resin IP {resin_ip}")
                 logger.log("代理来源: Resin")
                 return resin_proxy, "resin", resin_ip
+            if _is_airouter_platform():
+                raise RuntimeError("AI-ROUTER Resin 未命中可用 IP，已禁止回退其它代理或直连；请切换 Resin session/IP")
+            if platform_name == "lemondata":
+                raise RuntimeError("LemonData Resin 未命中可用 IP，已禁止回退其它代理或直连；请检查 Resin 配置或切换 Resin session/IP")
         if _is_truthy_config(config_store.get("decodo_enabled", "false")):
             decodo_proxy, _dslot, decodo_ip = _pick_decodo_proxy_with_ip_check()
             if decodo_proxy:
@@ -2424,15 +2908,64 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
             logger.log("SCDN 运行时来源已启用，开始拉取可用代理")
         scdn_proxy = _get_scdn_runtime_proxy(platform_name, logger)
         if scdn_proxy:
-            logger.log("代理来源: SCDN 运行时来源")
-            return scdn_proxy, "scdn", ""
+            if _is_airouter_platform():
+                scdn_ip = _probe_proxy_ip(scdn_proxy)
+                if not scdn_ip:
+                    logger.log("SCDN 运行时来源 IP 探测失败，跳过", level="warning")
+                else:
+                    routes_ok, route_reason = _probe_airouter_proxy_routes(scdn_proxy)
+                    if not routes_ok:
+                        logger.log(f"SCDN 运行时来源 AI-ROUTER route precheck failed ({route_reason}), skipping", level="warning")
+                    elif _claim_airouter_ip(scdn_ip, "SCDN 运行时来源"):
+                        logger.log(f"代理来源: SCDN 运行时来源 IP {scdn_ip or '-'}")
+                        return scdn_proxy, "scdn", scdn_ip
+            else:
+                logger.log("代理来源: SCDN 运行时来源")
+                return scdn_proxy, "scdn", ""
         if scdn_runtime_enabled:
             logger.log("SCDN 运行时来源未命中，尝试订阅代理")
         subscription_proxy = _get_subscription_proxy(logger)
         if subscription_proxy:
-            logger.log("代理来源: 订阅代理 (sing-box)")
-            return subscription_proxy, "subscription", ""
+            if _is_airouter_platform():
+                subscription_ip = _probe_proxy_ip(subscription_proxy)
+                if not subscription_ip:
+                    logger.log("订阅代理 IP 探测失败，跳过", level="warning")
+                else:
+                    routes_ok, route_reason = _probe_airouter_proxy_routes(subscription_proxy)
+                    if not routes_ok:
+                        logger.log(f"订阅代理 AI-ROUTER route precheck failed ({route_reason}), skipping", level="warning")
+                    elif _claim_airouter_ip(subscription_ip, "订阅代理"):
+                        logger.log(f"代理来源: 订阅代理 (sing-box) IP {subscription_ip or '-'}")
+                        return subscription_proxy, "subscription", subscription_ip
+            else:
+                logger.log("代理来源: 订阅代理 (sing-box)")
+                return subscription_proxy, "subscription", ""
         if platform_name != "venice":
+            if _is_airouter_platform():
+                excluded_urls: set[str] = set()
+                for _attempt in range(20):
+                    pool_proxy = proxy_pool.get_next(exclude_urls=excluded_urls)
+                    if not pool_proxy:
+                        break
+                    pool_ip = _probe_proxy_ip(pool_proxy)
+                    if not pool_ip:
+                        logger.log("后端代理池 IP 探测失败，跳过", level="warning")
+                        excluded_urls.add(pool_proxy)
+                        proxy_pool.report_fail(pool_proxy)
+                        continue
+                    routes_ok, route_reason = _probe_airouter_proxy_routes(pool_proxy)
+                    if not routes_ok:
+                        logger.log(f"后端代理池 AI-ROUTER route precheck failed ({route_reason}), skipping", level="warning")
+                        excluded_urls.add(pool_proxy)
+                        continue
+                    if not _claim_airouter_ip(pool_ip, "后端代理池"):
+                        excluded_urls.add(pool_proxy)
+                        continue
+                    logger.log(f"代理来源: 后端代理池 IP {pool_ip}")
+                    return pool_proxy, "pool", pool_ip
+                if scdn_runtime_enabled:
+                    raise RuntimeError("SCDN 已启用，但未命中可用代理，且后端代理池无 AI-ROUTER 可用 IP")
+                raise RuntimeError("AI-ROUTER 未命中可用代理，已禁止回退直连；请切换 Resin session/IP 或配置可用代理")
             pool_proxy = proxy_pool.get_next()
             if pool_proxy:
                 logger.log("代理来源: 后端代理池")
@@ -2480,9 +3013,9 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
                 _mark_inventory_processed(inventory_item_id)
             return "__cancel_requested__"
         extra = _merge_register_extra(dict(payload.get("extra") or {}), dict(getattr(seed, "extra", {}) or {}))
-        if _is_freemodel_platform(platform_name):
-            with freemodel_invite_lock:
-                extra = _apply_freemodel_chain_invite(platform_name, extra, freemodel_invite_state)
+        if _chain_invite_enabled(platform_name):
+            with chain_invite_lock:
+                extra = _chain_apply_invite(platform_name, extra, chain_invite_state)
         extra = _sanitize_parallel_oauth_browser_extra(extra, concurrency=concurrency)
         email = (getattr(seed, "email", "") or default_email or None)
         password = (getattr(seed, "password", "") or default_password or None)
@@ -2531,173 +3064,241 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
             "password": password,
             "extra": extra,
         }
-        resolved_proxy, proxy_source, resin_ip = None, "", ""
-        try:
-            resolved_proxy, proxy_source, resin_ip = _resolve_task_proxy(index)
-            platform = _build_platform_instance(platform_name, seed_payload, logger, resolved_proxy=resolved_proxy)
-            display_email = email or "(auto)"
-            logger.log(f"开始注册第 {index + 1}/{count} 个账号: {display_email}")
-            if resolved_proxy:
-                logger.log(f"使用代理: {resolved_proxy}")
-            account = platform.register(email=email, password=password)
-            reserved_google_email = str((account.extra or {}).get("google_pool_reserved_email") or "").strip()
-            if reserved_google_email:
-                extra["_reserved_google_pool_email"] = reserved_google_email
-            save_account(account)
-            if _is_freemodel_platform(platform_name):
-                next_invite_code = _extract_freemodel_next_invite_code(account)
-                if next_invite_code:
-                    with freemodel_invite_lock:
-                        freemodel_invite_state["next_invite_code"] = next_invite_code
-                    logger.log(f"FreeModel 下一账号邀请码更新为: {next_invite_code}")
-            if str(extra.get("oauth_account_source") or "").strip().lower() in {"mailbox", "mail_provider", "provider"}:
-                try:
-                    from core.google_account_pool import GoogleAccountPool
-                    pool_email = account.email or email or ""
-                    GoogleAccountPool().mark_registered(pool_email, platform_name)
-                    extra["_reserved_google_pool_email"] = ""
-                except Exception:
-                    pass
-            if resolved_proxy and proxy_source == "pool":
-                proxy_pool.report_success(resolved_proxy)
-                _record_venice_proxy_success(resolved_proxy)
-            if proxy_source in ("resin", "decodo", "brightdata"):
-                _record_resin_ip_success(resin_ip)
-                if platform_name == "atxp" and resin_ip:
-                    with venice_proxy_successes_lock:
-                        _atxp_ip_successes[resin_ip] = _atxp_ip_successes.get(resin_ip, 0) + 1
-            if inventory_item_id > 0:
-                registered_email = str(getattr(account, "email", "") or email or "")
-                inventory_repository.mark_registration_success(
-                    inventory_item_id,
-                    registered_email=registered_email,
-                    task_id=logger.task_id,
-                    platform=platform_name,
-                )
-                if inventory_provider_key == "outlook_token":
+        max_proxy_attempts = 1
+        if platform_name == "airouter":
+            try:
+                max_proxy_attempts = max(1, int(extra.get("airouter_proxy_retry_attempts") or 8))
+            except Exception:
+                max_proxy_attempts = 8
+        elif platform_name == "lemondata":
+            try:
+                max_proxy_attempts = max(1, int(extra.get("lemondata_proxy_retry_attempts") or extra.get("proxy_retry_attempts") or 8))
+            except Exception:
+                max_proxy_attempts = 8
+        for proxy_attempt in range(1, max_proxy_attempts + 1):
+            resolved_proxy, proxy_source, resin_ip = None, "", ""
+            try:
+                resolved_proxy, proxy_source, resin_ip = _resolve_task_proxy(index)
+                if platform_name == "airouter" and resin_ip:
+                    # AI-ROUTER 前端注册请求会携带 webrtc_client_ip；这里用当前代理出口 IP 补齐，
+                    # 保证 Turnstile、发码、注册体里的 IP 线索一致。
+                    seed_payload = {
+                        **seed_payload,
+                        "extra": {
+                            **dict(seed_payload.get("extra") or {}),
+                            "airouter_webrtc_client_ip": resin_ip,
+                            "webrtc_client_ip": resin_ip,
+                        },
+                    }
+                    logger.log(f"AI-ROUTER webrtc_client_ip={resin_ip}")
+                platform = _build_platform_instance(platform_name, seed_payload, logger, resolved_proxy=resolved_proxy)
+                display_email = email or "(auto)"
+                logger.log(f"开始注册第 {index + 1}/{count} 个账号: {display_email}")
+                if resolved_proxy:
+                    logger.log(f"使用代理: {resolved_proxy}")
+                account = platform.register(email=email, password=password)
+                reserved_google_email = str((account.extra or {}).get("google_pool_reserved_email") or "").strip()
+                if reserved_google_email:
+                    extra["_reserved_google_pool_email"] = reserved_google_email
+                save_account(account)
+                if _chain_invite_enabled(platform_name):
+                    with chain_invite_lock:
+                        recorded_invite_code = _chain_record_success(platform_name, account, chain_invite_state)
+                    if recorded_invite_code:
+                        logger.log(f"{platform_name} 邀请码入池供后续号链式: {recorded_invite_code}")
+                if str(extra.get("oauth_account_source") or "").strip().lower() in {"mailbox", "mail_provider", "provider"}:
                     try:
-                        _upsert_successful_outlook_alias(
-                            inventory_repository=inventory_repository,
-                            seed=seed,
-                            extra=extra,
-                            inventory_metadata=inventory_metadata,
-                            platform_name=platform_name,
-                            logger=logger,
-                            registered_email=registered_email,
-                            generated_outlook_alias=generated_outlook_alias,
-                            preferred_parent_email=outlook_alias_parent_email,
-                        )
-                    except Exception as alias_exc:
-                        logger.log(f"  [邮箱池] Outlook 别名入池失败: {alias_exc}", level="warning")
-                _mark_inventory_processed(inventory_item_id)
-            logger.record_success()
-            logger.log(f"[OK] 注册成功: {account.email}")
-            _save_task_log(platform_name, account.email, "success")
-            _auto_upload_cpa(logger, account)
-            _auto_import_codebanana2api(logger, account)
-            _auto_import_anuma2api(logger, account)
-            _auto_import_enter2api(logger, account)
-            _auto_import_blendspace2api(logger, account)
-            _auto_export_fireworks_key(logger, account)
-            _auto_export_gettoken_key(logger, account)
-            _auto_export_lemondata_key(logger, account)
-            _auto_export_zo_key(logger, account)
-            _auto_push_zo_twoapi(logger, account, extra)
-            _auto_push_swarms_twoapi(logger, account, extra)
-            _auto_push_anycap_twoapi(logger, account, extra)
-            _auto_export_swarms_key(logger, account)
-            _auto_export_anycap_key(logger, account)
-            _auto_export_featherless_key(logger, account)
-            _auto_export_jiekou_key(logger, account)
-            cashier_url = (account.extra or {}).get("cashier_url", "")
-            if cashier_url:
-                logger.log(f"  [升级链接] {cashier_url}")
-                logger.add_cashier_url(cashier_url)
-            return True
-        except Exception as exc:
-            error = str(exc)
-            if proxy_source in ("resin", "decodo", "brightdata") and "did not reach expected credits" in error:
-                _ban_resin_ip(resin_ip)
-            if platform_name == "atxp" and "account_restricted: fraud_blocked" in error and resin_ip:
-                with venice_proxy_successes_lock:
-                    if resin_ip not in _atxp_ip_banned:
-                        _atxp_ip_banned.add(resin_ip)
-                        logger.log(f"ATXP IP {resin_ip} banned (fraud_blocked)")
-            if resolved_proxy and proxy_source == "pool":
-                proxy_pool.report_fail(resolved_proxy)
-            result = getattr(exc, "result", None)
-            # 并发注册时异常对象可能携带其它 worker 的结果/邮箱；失败归档必须优先使用当前 worker 的邮箱。
-            persist_email = str(email or "").strip() or str(getattr(result, "email", "") or "").strip()
-            reserved_google_email = str(extra.get("_reserved_google_pool_email") or persist_email or "").strip()
-            if reserved_google_email and str(extra.get("oauth_account_source") or "").strip().lower() in {"mailbox", "mail_provider", "provider"}:
-                try:
-                    from core.google_account_pool import GoogleAccountPool
-                    GoogleAccountPool().release(reserved_google_email, platform_name)
-                    extra["_reserved_google_pool_email"] = ""
-                except Exception:
-                    pass
-            lifecycle_status = _derive_partial_lifecycle(result, error)
-            if persist_email:
-                try:
-                    _persist_registration_snapshot(
-                        platform=platform_name,
-                        email=persist_email,
-                        password=str(password or getattr(result, "password", "") or ""),
-                        lifecycle_status=lifecycle_status,
-                        extra=extra,
-                        error=error,
-                        result=result,
-                    )
-                    logger.log(f"  [状态] 已记录 {persist_email} -> {lifecycle_status}", level="warning")
-                except Exception as snapshot_exc:
-                    logger.log(f"  [状态] 写入失败快照异常: {snapshot_exc}", level="warning")
-            if inventory_item_id > 0:
-                metadata_updates = {
-                    "remote_email": persist_email or email or "",
-                    "last_stage": str((getattr(result, "metadata", {}) or {}).get("last_stage", "") or ""),
-                }
-                if _is_verification_timeout_failure(error, result):
-                    timeout_result = inventory_repository.mark_verification_timeout_blacklisted(
+                        from core.google_account_pool import GoogleAccountPool
+                        pool_email = account.email or email or ""
+                        GoogleAccountPool().mark_registered(pool_email, platform_name)
+                        extra["_reserved_google_pool_email"] = ""
+                    except Exception:
+                        pass
+                if resolved_proxy and proxy_source == "pool":
+                    proxy_pool.report_success(resolved_proxy)
+                    _record_venice_proxy_success(resolved_proxy)
+                if platform_name == "airouter" and resin_ip:
+                    _record_airouter_ip_success(resin_ip)
+                if proxy_source in ("resin", "decodo", "brightdata") and platform_name != "airouter":
+                    _record_resin_ip_success(resin_ip)
+                    if platform_name == "atxp" and resin_ip:
+                        with venice_proxy_successes_lock:
+                            _atxp_ip_successes[resin_ip] = _atxp_ip_successes.get(resin_ip, 0) + 1
+                if inventory_item_id > 0:
+                    registered_email = str(getattr(account, "email", "") or email or "")
+                    inventory_repository.mark_registration_success(
                         inventory_item_id,
-                        error=error,
+                        registered_email=registered_email,
                         task_id=logger.task_id,
                         platform=platform_name,
-                        registered_email=persist_email or email or "",
-                        metadata_updates=metadata_updates,
                     )
-                    timeout_status = str((timeout_result or {}).get("status") or "")
-                    timeout_note = str((timeout_result or {}).get("note") or "").strip()
-                    if timeout_status == "blacklisted":
-                        logger.log("  [邮箱池] 验证码超时，邮箱已拉黑，不再继续分配", level="warning")
+                    if inventory_provider_key == "outlook_token":
+                        try:
+                            _upsert_successful_outlook_alias(
+                                inventory_repository=inventory_repository,
+                                seed=seed,
+                                extra=extra,
+                                inventory_metadata=inventory_metadata,
+                                platform_name=platform_name,
+                                logger=logger,
+                                registered_email=registered_email,
+                                generated_outlook_alias=generated_outlook_alias,
+                                preferred_parent_email=outlook_alias_parent_email,
+                            )
+                        except Exception as alias_exc:
+                            logger.log(f"  [邮箱池] Outlook 别名入池失败: {alias_exc}", level="warning")
+                    _mark_inventory_processed(inventory_item_id)
+                logger.record_success()
+                logger.log(f"[OK] 注册成功: {account.email}")
+                _save_task_log(platform_name, account.email, "success")
+                _auto_upload_cpa(logger, account)
+                _auto_import_codebanana2api(logger, account)
+                _auto_import_anuma2api(logger, account)
+                _auto_import_enter2api(logger, account)
+                _auto_import_blendspace2api(logger, account)
+                _auto_export_fireworks_key(logger, account)
+                _auto_export_gettoken_key(logger, account)
+                _auto_export_lemondata_key(logger, account)
+                _auto_export_zo_key(logger, account)
+                _auto_push_thesys_twoapi(logger, account, extra)
+                _auto_export_swarms_key(logger, account)
+                _auto_export_anycap_key(logger, account)
+                _auto_export_thesys_key(logger, account)
+                _auto_export_featherless_key(logger, account)
+                _auto_export_jiekou_key(logger, account)
+                cashier_url = (account.extra or {}).get("cashier_url", "")
+                if cashier_url:
+                    logger.log(f"  [升级链接] {cashier_url}")
+                    logger.add_cashier_url(cashier_url)
+                return True
+            except Exception as exc:
+                error = str(exc)
+                airouter_balance_limited = platform_name == "airouter" and _is_airouter_balance_insufficient_error(error)
+                airouter_retryable_proxy_error = (
+                    platform_name == "airouter"
+                    and not airouter_balance_limited
+                    and _is_airouter_retryable_proxy_error(error)
+                    and proxy_attempt < max_proxy_attempts
+                )
+                if airouter_retryable_proxy_error:
+                    if resin_ip:
+                        _release_airouter_ip(resin_ip)
+                    if resolved_proxy and proxy_source == "pool":
+                        proxy_pool.report_fail(resolved_proxy)
+                    logger.log(
+                        f"AI-ROUTER 代理连接异常，换 IP 重试 {proxy_attempt + 1}/{max_proxy_attempts}: {error}",
+                        level="warning",
+                    )
+                    time.sleep(min(5, 1 + proxy_attempt))
+                    continue
+                lemondata_retryable_proxy_error = (
+                    platform_name == "lemondata"
+                    and _is_lemondata_retryable_proxy_error(error)
+                    and proxy_attempt < max_proxy_attempts
+                )
+                if lemondata_retryable_proxy_error:
+                    if proxy_source in ("resin", "decodo", "brightdata"):
+                        _ban_resin_ip(resin_ip)
+                    if resolved_proxy and proxy_source == "pool":
+                        proxy_pool.report_fail(resolved_proxy)
+                    logger.log(
+                        f"LemonData 代理连接异常，换 IP 重试 {proxy_attempt + 1}/{max_proxy_attempts}: {error}",
+                        level="warning",
+                    )
+                    time.sleep(min(5, 1 + proxy_attempt))
+                    continue
+                if airouter_balance_limited:
+                    failure_ip = resin_ip
+                    if not failure_ip and resolved_proxy:
+                        failure_ip = _probe_proxy_ip(resolved_proxy)
+                    if failure_ip:
+                        _mark_airouter_ip_exhausted(failure_ip, "insufficient_balance")
                     else:
-                        logger.log(
-                            f"  [邮箱池] {timeout_note or '验证码超时，邮箱已回收到邮箱池，可再次分配'}",
-                            level="warning",
+                        logger.log("AI-ROUTER 余额不足失败，但未探测到出口 IP，无法加入 IP 黑名单", level="warning")
+                elif platform_name == "airouter" and resin_ip:
+                    _release_airouter_ip(resin_ip)
+                if proxy_source in ("resin", "decodo", "brightdata") and ("did not reach expected credits" in error or (platform_name == "lemondata" and "too_many_registrations" in error)):
+                    _ban_resin_ip(resin_ip)
+                if platform_name == "atxp" and "account_restricted: fraud_blocked" in error and resin_ip:
+                    with venice_proxy_successes_lock:
+                        if resin_ip not in _atxp_ip_banned:
+                            _atxp_ip_banned.add(resin_ip)
+                            logger.log(f"ATXP IP {resin_ip} banned (fraud_blocked)")
+                if resolved_proxy and proxy_source == "pool" and not airouter_balance_limited:
+                    proxy_pool.report_fail(resolved_proxy)
+                result = getattr(exc, "result", None)
+                # 并发注册时异常对象可能携带其它 worker 的结果/邮箱；失败归档必须优先使用当前 worker 的邮箱。
+                persist_email = str(email or "").strip() or str(getattr(result, "email", "") or "").strip()
+                reserved_google_email = str(extra.get("_reserved_google_pool_email") or persist_email or "").strip()
+                if reserved_google_email and str(extra.get("oauth_account_source") or "").strip().lower() in {"mailbox", "mail_provider", "provider"}:
+                    try:
+                        from core.google_account_pool import GoogleAccountPool
+                        GoogleAccountPool().release(reserved_google_email, platform_name)
+                        extra["_reserved_google_pool_email"] = ""
+                    except Exception:
+                        pass
+                lifecycle_status = _derive_partial_lifecycle(result, error)
+                if persist_email:
+                    try:
+                        _persist_registration_snapshot(
+                            platform=platform_name,
+                            email=persist_email,
+                            password=str(password or getattr(result, "password", "") or ""),
+                            lifecycle_status=lifecycle_status,
+                            extra=extra,
+                            error=error,
+                            result=result,
                         )
-                else:
-                    failure_result = resolve_inventory_register_failure(
-                        inventory_provider_key,
-                        inventory_metadata,
-                        registered_email=persist_email or email or "",
-                        platform=platform_name,
-                        error=error,
-                    )
-                    failure_metadata = dict(failure_result.get("metadata") or {})
-                    failure_metadata.update(metadata_updates)
-                    inventory_repository.update_item(
-                        inventory_item_id,
-                        status=str(failure_result.get("status") or lifecycle_status),
-                        note=str(failure_result.get("note") or persist_email or email or ""),
-                        last_error=error,
-                        task_id=logger.task_id,
-                        platform=platform_name,
-                        metadata_updates=failure_metadata,
-                    )
-                _mark_inventory_processed(inventory_item_id)
-            logger.record_error(error)
-            logger.log(f"[FAIL] 注册失败: {error}", level="error")
-            _save_task_log(platform_name, persist_email or email or "", "failed", error=error)
-            return error
+                        logger.log(f"  [状态] 已记录 {persist_email} -> {lifecycle_status}", level="warning")
+                    except Exception as snapshot_exc:
+                        logger.log(f"  [状态] 写入失败快照异常: {snapshot_exc}", level="warning")
+                if inventory_item_id > 0:
+                    metadata_updates = {
+                        "remote_email": persist_email or email or "",
+                        "last_stage": str((getattr(result, "metadata", {}) or {}).get("last_stage", "") or ""),
+                    }
+                    if _is_verification_timeout_failure(error, result):
+                        timeout_result = inventory_repository.mark_verification_timeout_blacklisted(
+                            inventory_item_id,
+                            error=error,
+                            task_id=logger.task_id,
+                            platform=platform_name,
+                            registered_email=persist_email or email or "",
+                            metadata_updates=metadata_updates,
+                        )
+                        timeout_status = str((timeout_result or {}).get("status") or "")
+                        timeout_note = str((timeout_result or {}).get("note") or "").strip()
+                        if timeout_status == "blacklisted":
+                            logger.log("  [邮箱池] 验证码超时，邮箱已拉黑，不再继续分配", level="warning")
+                        else:
+                            logger.log(
+                                f"  [邮箱池] {timeout_note or '验证码超时，邮箱已回收到邮箱池，可再次分配'}",
+                                level="warning",
+                            )
+                    else:
+                        failure_result = resolve_inventory_register_failure(
+                            inventory_provider_key,
+                            inventory_metadata,
+                            registered_email=persist_email or email or "",
+                            platform=platform_name,
+                            error=error,
+                        )
+                        failure_metadata = dict(failure_result.get("metadata") or {})
+                        failure_metadata.update(metadata_updates)
+                        inventory_repository.update_item(
+                            inventory_item_id,
+                            status=str(failure_result.get("status") or lifecycle_status),
+                            note=str(failure_result.get("note") or persist_email or email or ""),
+                            last_error=error,
+                            task_id=logger.task_id,
+                            platform=platform_name,
+                            metadata_updates=failure_metadata,
+                        )
+                    _mark_inventory_processed(inventory_item_id)
+                logger.record_error(error)
+                logger.log(f"[FAIL] 注册失败: {error}", level="error")
+                _save_task_log(platform_name, persist_email or email or "", "failed", error=error)
+                return error
 
     try:
         submitted = 0

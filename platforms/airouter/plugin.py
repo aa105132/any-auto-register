@@ -20,6 +20,12 @@ class AiRouterPlatform(BasePlatform):
     supported_executors = ["protocol", "cdp_protocol"]
     supported_identity_modes = ["mailbox"]
 
+    def _resolve_captcha_solver(self) -> str:
+        requested = str((self.config.captcha_solver if self.config else "") or "").strip().lower()
+        if (self.config and self.config.executor_type == "cdp_protocol") and (not requested or requested == "auto"):
+            return "cdp_turnstile"
+        return super()._resolve_captcha_solver()
+
     def __init__(self, config: RegisterConfig = None, mailbox: BaseMailbox = None):
         super().__init__(config)
         self.mailbox = mailbox
@@ -64,6 +70,8 @@ class AiRouterPlatform(BasePlatform):
                 "api_key_info": dict(result.get("api_key_info") or {}),
                 "api_verification": dict(result.get("api_verification") or {}),
                 "key_create_result": dict(result.get("key_create_result") or {}),
+                "affiliate_fingerprint": str(result.get("affiliate_fingerprint") or ""),
+                "browser_fingerprint": dict(result.get("browser_fingerprint") or {}),
                 "group_id": result.get("group_id"),
                 "group_info": dict(result.get("group_info") or {}),
                 "site_url": str(result.get("site_url") or "https://ai-router.dev/"),
@@ -76,6 +84,7 @@ class AiRouterPlatform(BasePlatform):
 
     def build_protocol_mailbox_adapter(self):
         extra = (self.config.extra if self.config else {}) or {}
+        captcha_solver = str(extra.get("airouter_captcha_solver") or "").strip().lower() or self._resolve_captcha_solver()
         return ProtocolMailboxAdapter(
             result_mapper=lambda ctx, result: self._map_result(result),
             worker_builder=lambda ctx, artifacts: __import__(
@@ -95,6 +104,10 @@ class AiRouterPlatform(BasePlatform):
                 group_id=extra.get("airouter_group_id") or extra.get("group_id") or None,
                 min_success_balance=float(extra.get("airouter_min_success_balance") or extra.get("min_success_balance") or 20.0),
                 webrtc_client_ip=str(extra.get("airouter_webrtc_client_ip") or extra.get("webrtc_client_ip") or ""),
+                captcha_solver=captcha_solver,
+                yescaptcha_key=str(extra.get("yescaptcha_key") or ""),
+                yescaptcha_api_url=str(extra.get("yescaptcha_api_url") or "https://api.yescaptcha.com"),
+                allow_external_cdp=str(extra.get("airouter_allow_external_cdp") or "").strip().lower() in {"1", "true", "yes", "on"},
             ),
             register_runner=lambda worker, ctx, artifacts: worker.run(
                 email=ctx.identity.email,

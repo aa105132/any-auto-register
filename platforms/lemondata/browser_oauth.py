@@ -41,7 +41,7 @@ def isolated_oauth_browser_options(
 
 def _cookie_map(browser: OAuthBrowser) -> dict[str, str]:
     try:
-        return browser.cookie_dict(domain_substrings=("lemondata.cc",))
+        return browser.cookie_dict(domain_substrings=("tokenlab.sh", "lemondata.cc"))
     except Exception:
         return {}
 
@@ -50,16 +50,16 @@ def _has_auth_cookie(cookies: dict[str, str]) -> bool:
     return any("session-token" in str(name).lower() for name in cookies.keys())
 
 
-def _create_api_key_http(cookies: dict[str, str], *, name: str, proxy: str | None = None, log_fn=print) -> dict[str, Any]:
-    client = LemonDataClient(proxy=proxy, log_fn=log_fn)
+def _create_api_key_http(cookies: dict[str, str], *, name: str, proxy: str | None = None, user_agent: str = "", log_fn=print) -> dict[str, Any]:
+    client = LemonDataClient(proxy=proxy, user_agent=user_agent, log_fn=log_fn)
     client.import_cookies(cookies)
     result = client.create_or_find_api_key(name=name)
     api_key = str(result.get("api_key") or find_api_key(result) or "").strip()
     return {"ok": bool(api_key), "api_key": api_key, "data": result.get("api_key_info") or result, "raw": result}
 
 
-def _verify_api_key_http(api_key: str, *, proxy: str | None = None, log_fn=print) -> dict[str, Any]:
-    return LemonDataClient(proxy=proxy, log_fn=log_fn).verify_api_key(api_key)
+def _verify_api_key_http(api_key: str, *, proxy: str | None = None, user_agent: str = "", log_fn=print) -> dict[str, Any]:
+    return LemonDataClient(proxy=proxy, user_agent=user_agent, log_fn=log_fn).verify_api_key(api_key)
 
 
 def _create_api_key_in_browser(page, *, name: str, log_fn=print) -> dict[str, Any]:
@@ -220,6 +220,12 @@ def register_with_browser_oauth(
     ) as browser:
         page = browser.new_page()
         page.goto(SIGNIN_URL, wait_until="domcontentloaded", timeout=90000)
+        try:
+            browser_user_agent = str(page.evaluate("() => navigator.userAgent") or "").strip()
+        except Exception:
+            browser_user_agent = ""
+        if browser_user_agent:
+            log_fn(f"[LemonData] browser user-agent: {browser_user_agent[:120]}")
         captured_requests = _collect_dashboard_api_requests(page)
         time.sleep(1)
         if not _start_google_oauth_protocol(page, log_fn=log_fn):
@@ -250,7 +256,7 @@ def register_with_browser_oauth(
                 if item.is_closed():
                     continue
                 page_urls.append(str(item.url or ""))
-                if "lemondata.cc" in (item.url or ""):
+                if any(host in (item.url or "") for host in ("tokenlab.sh", "lemondata.cc")):
                     dashboard_page = item
                 if "/dashboard" in (item.url or ""):
                     dashboard_page = item
@@ -271,19 +277,19 @@ def register_with_browser_oauth(
             page_urls = [str(p.url or "") for p in browser.pages() if not p.is_closed()]
             raise RuntimeError(f"LemonData OAuth 登录超时，未拿到 Auth.js session cookie: cookies={sorted(cookies.keys())}, urls={page_urls}")
 
-        client = LemonDataClient(proxy=proxy, log_fn=log_fn)
+        client = LemonDataClient(proxy=proxy, user_agent=browser_user_agent, log_fn=log_fn)
         client.import_cookies(cookies)
         session_result = client.get_session()
         session_data = session_result.get("data") or {}
         key_name = f"auto-register-{int(time.time())}"
-        create_result = _create_api_key_http(cookies, name=key_name, proxy=proxy, log_fn=log_fn)
+        create_result = _create_api_key_http(cookies, name=key_name, proxy=proxy, user_agent=browser_user_agent, log_fn=log_fn)
         if not create_result.get("ok"):
             log_fn(f"[LemonData] HTTP 创建 API Key 失败，改用浏览器同源 fetch: {create_result}")
             create_result = _create_api_key_in_browser(dashboard_page, name=key_name, log_fn=log_fn)
         if not create_result.get("ok"):
             raise RuntimeError(f"LemonData 创建 API Key 失败: {create_result}")
         api_key = str(create_result.get("api_key") or find_api_key(create_result) or "").strip()
-        api_verification = _verify_api_key_http(api_key, proxy=proxy, log_fn=log_fn)
+        api_verification = _verify_api_key_http(api_key, proxy=proxy, user_agent=browser_user_agent, log_fn=log_fn)
         balance_result = client.require_min_balance(min_amount=1.0)
         actual_email = _extract_logged_email(dashboard_page, session_data)
 
@@ -298,6 +304,7 @@ def register_with_browser_oauth(
         "cookies": cookies,
         "cookie_header": "; ".join(f"{name}={value}" for name, value in cookies.items() if value),
         "captured_requests": captured_requests,
+        "browser_user_agent": browser_user_agent,
         "api_base": LLM_API_BASE,
         "site_url": SITE_URL,
         "dashboard_url": DASHBOARD_URL,

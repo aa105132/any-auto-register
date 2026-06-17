@@ -14,7 +14,7 @@ class ChatGPTPlatform(BasePlatform):
     version = "1.0.0"
     supported_executors = ["protocol", "headless", "headed"]
     supported_identity_modes = ["mailbox", "oauth_browser"]
-    supported_oauth_providers = ["google", "microsoft", "apple"]
+    supported_oauth_providers = ["google", "microsoft", "apple", "pilipala_sso"]
 
     def __init__(self, config: RegisterConfig = None, mailbox: BaseMailbox = None):
         super().__init__(config)
@@ -58,6 +58,19 @@ class ChatGPTPlatform(BasePlatform):
         )
 
     def _run_protocol_oauth(self, ctx) -> dict:
+        if str(getattr(ctx.identity, "oauth_provider", "") or "").strip().lower() == "pilipala_sso":
+            from platforms.chatgpt.protocol_sso import register_with_protocol_sso
+
+            return register_with_protocol_sso(
+                proxy=ctx.proxy,
+                email_hint=getattr(ctx.identity, "email", "") or ctx.extra.get("oauth_email_hint", ""),
+                prefix=ctx.extra.get("chatgpt_sso_prefix", ctx.extra.get("pilipala_sso_prefix", "")),
+                sso_password=ctx.extra.get("chatgpt_sso_password", ctx.extra.get("pilipala_sso_password", "ciallo")),
+                sso_domain=ctx.extra.get("chatgpt_sso_domain", ctx.extra.get("pilipala_sso_domain", "edu.pilipala.store")),
+                timeout=resolve_timeout(ctx.extra, ("browser_oauth_timeout", "manual_oauth_timeout"), 300),
+                log_fn=ctx.log,
+            )
+
         from platforms.chatgpt.browser_oauth import register_with_browser_oauth
 
         return register_with_browser_oauth(
@@ -70,6 +83,11 @@ class ChatGPTPlatform(BasePlatform):
             chrome_user_data_dir=ctx.identity.chrome_user_data_dir,
             chrome_cdp_url=ctx.identity.chrome_cdp_url,
         )
+
+    def _should_use_browser_registration_flow(self, identity) -> bool:
+        if getattr(identity, "identity_provider", "") == "oauth_browser" and getattr(identity, "oauth_provider", "") == "pilipala_sso":
+            return False
+        return super()._should_use_browser_registration_flow(identity)
 
     def build_browser_registration_adapter(self):
         return BrowserRegistrationAdapter(

@@ -38,7 +38,7 @@ class TwoAPIServerRuntime:
 
     @property
     def listen(self) -> str:
-        return f"http://{self.host}:{self.port}/zo/v1"
+        return f"http://{self.host}:{self.port}/thesys/v1"
 
     @property
     def log_path(self) -> Path:

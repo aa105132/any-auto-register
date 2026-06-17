@@ -66,7 +66,7 @@ export default function Dashboard() {
   useEffect(() => { load() }, [])
 
   const statCards = useMemo(() => [
-    { label: '总账号数', value: stats?.total ?? '-', note: '已收录进账号资产的全部记录', icon: Users, color: 'text-[var(--color-accent-text)]' },
+    { label: '总账号数', value: stats?.total ?? '-', note: '已收录进账号资产的全部记录', icon: Users, color: 'text-[var(--color-text)]' },
     { label: '试用中', value: stats?.by_plan_state?.trial ?? 0, note: '仍处于试用套餐的账号', icon: Clock, color: 'text-amber-400' },
     { label: '已订阅', value: stats?.by_plan_state?.subscribed ?? 0, note: '已经进入付费或订阅状态', icon: CheckCircle, color: 'text-emerald-400' },
     { label: '已失效', value: (stats?.by_display_status?.expired ?? 0) + (stats?.by_validity_status?.invalid ?? 0), note: '过期与无效账号合计', icon: XCircle, color: 'text-red-400' },

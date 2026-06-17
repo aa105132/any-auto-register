@@ -146,7 +146,7 @@ function Metric({ label, value, hint, icon: Icon }: { label: string; value: stri
           <div className="text-[11px] font-medium uppercase tracking-[0.18em] text-[var(--color-text-muted)]">{label}</div>
           <div className="mt-1 text-2xl font-semibold tabular-nums text-[var(--color-text)]">{value}</div>
         </div>
-        <div className="flex h-9 w-9 items-center justify-center rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-accent-text)]">
+        <div className="flex h-9 w-9 items-center justify-center rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text)]">
           <Icon className="h-4 w-4" />
         </div>
       </div>

@@ -33,10 +33,7 @@ const TaskHistory = lazy(() => import('@/pages/TaskHistory'))
 const TwoAPI = lazy(() => import('@/pages/TwoAPI'))
 
 function navClass(isActive: boolean) {
-  return [
-    'sidebar-nav-item',
-    isActive ? 'active' : '',
-  ].join(' ')
+  return ['sidebar-nav-item', isActive ? 'active' : ''].join(' ')
 }
 
 function AccountsSubNav() {
@@ -69,16 +66,14 @@ function AccountsSubNav() {
         {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
       </button>
       {open && (
-        <div className="ml-2 mt-1 space-y-0.5">
+        <div className="sidebar-subnav">
           {platforms.map((p) => (
             <NavLink
               key={p.key}
               to={`/accounts/${p.key}`}
-              className={({ isActive }) =>
-                `sidebar-nav-item text-[13px] ${isActive ? 'active' : ''}`
-              }
+              className={({ isActive }) => `sidebar-nav-item ${isActive ? 'active' : ''}`}
             >
-              <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-accent)]/70 flex-shrink-0" />
+              <span className="sidebar-subnav-dot" />
               <span>{p.label}</span>
             </NavLink>
           ))}
@@ -87,7 +82,6 @@ function AccountsSubNav() {
     </div>
   )
 }
-
 
 type TwoAPIPluginNavItem = {
   key: string
@@ -137,16 +131,14 @@ function TwoAPISubNav() {
         {open ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
       </button>
       {open && (
-        <div className="ml-2 mt-1 space-y-0.5">
+        <div className="sidebar-subnav">
           {plugins.map((plugin) => (
             <NavLink
               key={plugin.key}
               to={`/twoapi/${plugin.key}`}
-              className={({ isActive }) =>
-                `sidebar-nav-item text-[13px] ${isActive ? 'active' : ''}`
-              }
+              className={({ isActive }) => `sidebar-nav-item ${isActive ? 'active' : ''}`}
             >
-              <span className="h-1.5 w-1.5 flex-shrink-0 rounded-full bg-[var(--color-accent)]/70" />
+              <span className="sidebar-subnav-dot" />
               <span>{plugin.label}</span>
             </NavLink>
           ))}
@@ -156,76 +148,107 @@ function TwoAPISubNav() {
   )
 }
 
+const ROUTE_TITLES: Array<{ match: (path: string) => boolean; title: string }> = [
+  { match: (p) => p === '/', title: '总览' },
+  { match: (p) => p.startsWith('/register'), title: '注册' },
+  { match: (p) => p.startsWith('/accounts'), title: '账号资产' },
+  { match: (p) => p.startsWith('/google-account-pool'), title: 'Google 账号池' },
+  { match: (p) => p.startsWith('/outlook-mailbox-pool'), title: 'Outlook 邮箱池' },
+  { match: (p) => p.startsWith('/credit-card-pool'), title: '信用卡池' },
+  { match: (p) => p.startsWith('/history'), title: '任务记录' },
+  { match: (p) => p.startsWith('/proxies'), title: '代理资源' },
+  { match: (p) => p.startsWith('/twoapi'), title: '2API' },
+  { match: (p) => p.startsWith('/settings'), title: '配置中心' },
+]
+
+function TopbarTitle() {
+  const location = useLocation()
+  const entry = ROUTE_TITLES.find((item) => item.match(location.pathname))
+  return <span className="app-topbar-title">{entry?.title || ''}</span>
+}
+
 function Sidebar({ theme, toggleTheme }: { theme: string; toggleTheme: () => void }) {
   const isLight = theme === 'light'
 
   return (
     <aside className="app-sidebar">
-      <div className="sidebar-inner">
-        <div className="mb-3 flex items-center justify-between gap-2 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2">
-          <span className="text-sm font-semibold text-[var(--color-text)]">控制台</span>
+      <div className="app-sidebar-brand">
+        <div className="h-5 w-5 rounded bg-[var(--color-accent)]" />
+        <span className="text-sm font-semibold text-[var(--color-text)]">控制台</span>
+      </div>
+
+      <nav className="app-sidebar-nav">
+        <section>
+          <div className="sidebar-section-title">入口</div>
+          <div className="space-y-1">
+            <NavLink to="/" end className={({ isActive }) => navClass(isActive)}>
+              <LayoutDashboard className="h-4 w-4" />
+              <span>总览</span>
+            </NavLink>
+            <NavLink to="/register" className={({ isActive }) => navClass(isActive)}>
+              <PlusCircle className="h-4 w-4" />
+              <span>注册</span>
+            </NavLink>
+          </div>
+        </section>
+
+        <section>
+          <div className="sidebar-section-title">资产</div>
+          <div className="space-y-1">
+            <AccountsSubNav />
+            <NavLink to="/google-account-pool" className={({ isActive }) => navClass(isActive)}>
+              <Database className="h-4 w-4" />
+              <span>Google 账号池</span>
+            </NavLink>
+            <NavLink to="/outlook-mailbox-pool" className={({ isActive }) => navClass(isActive)}>
+              <Inbox className="h-4 w-4" />
+              <span>Outlook 邮箱池</span>
+            </NavLink>
+            <NavLink to="/credit-card-pool" className={({ isActive }) => navClass(isActive)}>
+              <CreditCard className="h-4 w-4" />
+              <span>信用卡池</span>
+            </NavLink>
+          </div>
+        </section>
+
+        <section>
+          <div className="sidebar-section-title">系统</div>
+          <div className="space-y-1">
+            <TwoAPISubNav />
+            <NavLink to="/history" className={({ isActive }) => navClass(isActive)}>
+              <History className="h-4 w-4" />
+              <span>任务记录</span>
+            </NavLink>
+            <NavLink to="/proxies" className={({ isActive }) => navClass(isActive)}>
+              <Globe className="h-4 w-4" />
+              <span>代理资源</span>
+            </NavLink>
+            <NavLink to="/settings" className={({ isActive }) => navClass(isActive)}>
+              <SettingsIcon className="h-4 w-4" />
+              <span>配置中心</span>
+            </NavLink>
+          </div>
+        </section>
+      </nav>
+
+      <div className="app-sidebar-footer">
+        <div className="flex items-center gap-3 px-1 py-1">
+          <div className="h-8 w-8 rounded-full bg-[var(--color-surface-raised)] border border-[var(--color-border)] flex items-center justify-center text-xs font-medium text-[var(--color-text-secondary)]">
+            SC
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-medium text-[var(--color-text)] truncate">admin</p>
+            <p className="text-xs text-[var(--color-text-muted)] truncate">local@console</p>
+          </div>
           <button
             type="button"
             onClick={toggleTheme}
-            className="flex h-8 w-8 items-center justify-center rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text-secondary)] transition-colors hover:border-[var(--color-accent)] hover:text-[var(--color-text)]"
+            className="flex h-8 w-8 items-center justify-center rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-text)]"
+            title={isLight ? '切换到暗色' : '切换到亮色'}
           >
             {isLight ? <Moon className="h-3.5 w-3.5" /> : <Sun className="h-3.5 w-3.5" />}
           </button>
         </div>
-
-        <nav className="flex-1 space-y-5 overflow-y-auto">
-          <section>
-            <div className="sidebar-section-title mb-2">入口</div>
-            <div className="space-y-1">
-              <NavLink to="/" end className={({ isActive }) => navClass(isActive)}>
-                <LayoutDashboard className="h-4 w-4" />
-                <span>总览</span>
-              </NavLink>
-              <NavLink to="/register" className={({ isActive }) => navClass(isActive)}>
-                <PlusCircle className="h-4 w-4" />
-                <span>注册</span>
-              </NavLink>
-            </div>
-          </section>
-
-          <section>
-            <div className="sidebar-section-title mb-2">资产</div>
-            <div className="space-y-1">
-              <AccountsSubNav />
-              <NavLink to="/google-account-pool" className={({ isActive }) => navClass(isActive)}>
-                <Database className="h-4 w-4" />
-                <span>Google 账号池</span>
-              </NavLink>
-              <NavLink to="/outlook-mailbox-pool" className={({ isActive }) => navClass(isActive)}>
-                <Inbox className="h-4 w-4" />
-                <span>Outlook 邮箱池</span>
-              </NavLink>
-              <NavLink to="/credit-card-pool" className={({ isActive }) => navClass(isActive)}>
-                <CreditCard className="h-4 w-4" />
-                <span>信用卡池</span>
-              </NavLink>
-            </div>
-          </section>
-
-          <section>
-            <div className="sidebar-section-title mb-2">系统</div>
-            <div className="space-y-1">
-              <NavLink to="/history" className={({ isActive }) => navClass(isActive)}>
-                <History className="h-4 w-4" />
-                <span>任务记录</span>
-              </NavLink>
-              <NavLink to="/proxies" className={({ isActive }) => navClass(isActive)}>
-                <Globe className="h-4 w-4" />
-                <span>代理资源</span>
-              </NavLink>
-              <TwoAPISubNav />
-              <NavLink to="/settings" className={({ isActive }) => navClass(isActive)}>
-                <SettingsIcon className="h-4 w-4" />
-                <span>配置中心</span>
-              </NavLink>
-            </div>
-          </section>
-        </nav>
       </div>
     </aside>
   )
@@ -233,10 +256,13 @@ function Sidebar({ theme, toggleTheme }: { theme: string; toggleTheme: () => voi
 
 function Shell({ theme, toggleTheme }: { theme: string; toggleTheme: () => void }) {
   return (
-    <div className="app-shell">
-      <div className="app-window">
-        <Sidebar theme={theme} toggleTheme={toggleTheme} />
-        <main className="app-main">
+    <div className="app-root">
+      <Sidebar theme={theme} toggleTheme={toggleTheme} />
+      <div className="app-main-wrap">
+        <header className="app-topbar">
+          <TopbarTitle />
+        </header>
+        <div className="app-main-scroll">
           <Suspense fallback={<RouteFallback />}>
             <Routes>
               <Route path="/" element={<Dashboard />} />
@@ -253,7 +279,7 @@ function Shell({ theme, toggleTheme }: { theme: string; toggleTheme: () => void 
               <Route path="/settings" element={<Settings />} />
             </Routes>
           </Suspense>
-        </main>
+        </div>
       </div>
     </div>
   )

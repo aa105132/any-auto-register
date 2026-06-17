@@ -10,6 +10,7 @@ import requests
 BASE_URL = "https://gettoken.dev"
 PORTAL_LOGIN_URL = "https://pay.imgto.link"
 PORTAL_APP_ID = "appw084AkI0Jtflej7t"
+PORTAL_PHONE_URL = f"{PORTAL_LOGIN_URL}/en/auth/connect/{PORTAL_APP_ID}?origin={BASE_URL}&preferredChannel=PHONE_SMS"
 
 
 class GetTokenRegistrationClosed(RuntimeError):
@@ -289,6 +290,7 @@ class GetTokenProtocolPhoneWorker(GetTokenProtocolOAuthWorker):
         locale: str,
         phone_country_code: str,
         phone_number: str,
+        tencent_captcha: dict[str, Any] | None = None,
     ) -> dict:
         payload = {
             "appId": app_id,
@@ -300,6 +302,11 @@ class GetTokenProtocolPhoneWorker(GetTokenProtocolOAuthWorker):
             "phoneCountryCode": phone_country_code,
             "phoneNumber": phone_number,
         }
+        if tencent_captcha:
+            ticket = str(tencent_captcha.get("ticket") or "").strip()
+            randstr = str(tencent_captcha.get("randstr") or "").strip()
+            if ticket and randstr:
+                payload["tencentCaptcha"] = {"ticket": ticket, "randstr": randstr}
         response = self.portal_session.post(f"{PORTAL_LOGIN_URL}/api/v1/login/attempts", json=payload, timeout=30)
         self._record("POST", "/api/v1/login/attempts", status=response.status_code, note="发送手机号短信验证码")
         return _unwrap_api_payload(self._portal_json(response))
@@ -309,6 +316,37 @@ class GetTokenProtocolPhoneWorker(GetTokenProtocolOAuthWorker):
         response = self.portal_session.post(f"{PORTAL_LOGIN_URL}{path}", json={"code": code}, timeout=30)
         self._record("POST", path, status=response.status_code, note="提交短信验证码换取 Portal loginToken")
         return _unwrap_api_payload(self._portal_json(response))
+
+    def _solve_phone_tencent_captcha(
+        self,
+        provider_config: dict[str, Any],
+        *,
+        captcha_solver: Any = None,
+        app_id: str = PORTAL_APP_ID,
+        origin: str = BASE_URL,
+        locale: str = "en",
+    ) -> dict[str, str]:
+        enabled = bool(provider_config.get("tencentCaptchaEnabled"))
+        captcha_app_id = str(provider_config.get("tencentCaptchaAppId") or "").strip()
+        if not enabled:
+            return {}
+        if not captcha_app_id:
+            raise RuntimeError("GetToken Portal 要求腾讯滑块，但未返回 tencentCaptchaAppId")
+        if captcha_solver is None or not hasattr(captcha_solver, "solve_tencent_captcha"):
+            raise RuntimeError(
+                "GetToken PHONE_SMS 需要腾讯滑块票据；请使用 cdp_turnstile 验证码 solver，"
+                "或配置支持 solve_tencent_captcha 的 solver"
+            )
+        lang = str(locale or "en").strip() or "en"
+        page_url = f"{PORTAL_LOGIN_URL}/{lang}/auth/connect/{app_id}?origin={origin}&preferredChannel=PHONE_SMS"
+        self.log(f"[GetToken] 调起腾讯滑块验证 appId={captcha_app_id}")
+        solved = captcha_solver.solve_tencent_captcha(page_url, captcha_app_id, locale=lang)
+        ticket = str((solved or {}).get("ticket") or "").strip()
+        randstr = str((solved or {}).get("randstr") or "").strip()
+        if not ticket or not randstr:
+            raise RuntimeError(f"GetToken 腾讯滑块未返回有效 ticket/randstr: {solved}")
+        self.log(f"[GetToken] 腾讯滑块完成 ticket_len={len(ticket)} randstr_len={len(randstr)}")
+        return {"ticket": ticket, "randstr": randstr}
 
     @staticmethod
     def _phone_metadata(account) -> dict:
@@ -348,6 +386,7 @@ class GetTokenProtocolPhoneWorker(GetTokenProtocolOAuthWorker):
         otp_timeout: int = 180,
         poll_interval: int = 15,
         code_pattern: str | None = None,
+        captcha_solver: Any = None,
     ) -> dict:
         if phone_provider is None:
             raise RuntimeError("GetToken 手机号注册需要配置 phone_provider")
@@ -360,7 +399,11 @@ class GetTokenProtocolPhoneWorker(GetTokenProtocolOAuthWorker):
         if not user:
             providers = self.fetch_login_providers(app_id=app_id, origin=origin)
             provider_items = providers.get("providers") if isinstance(providers, dict) else []
-            if not any(str(item.get("channel") or "") == "PHONE_SMS" for item in provider_items if isinstance(item, dict)):
+            phone_provider_config = next(
+                (item for item in provider_items if isinstance(item, dict) and str(item.get("channel") or "") == "PHONE_SMS"),
+                None,
+            )
+            if not phone_provider_config:
                 raise RuntimeError("GetToken Portal 当前未开放 PHONE_SMS 登录渠道")
 
             self.log("[GetToken] 从手机号 provider 获取号码")
@@ -369,6 +412,13 @@ class GetTokenProtocolPhoneWorker(GetTokenProtocolOAuthWorker):
             if len(phone_number) != 11:
                 raise RuntimeError(f"GetToken PHONE_SMS 需要 11 位中国大陆手机号，当前号码无效: {getattr(phone_account, 'phone', '')}")
             phone_country_code = self._resolve_country_code(phone_account)
+            tencent_captcha = self._solve_phone_tencent_captcha(
+                phone_provider_config,
+                captcha_solver=captcha_solver,
+                app_id=app_id,
+                origin=origin,
+                locale=locale,
+            )
             self.log(f"[GetToken] 发送短信验证码: {phone_number[:4]}****")
             attempt = self.create_sms_attempt(
                 app_id=app_id,
@@ -376,6 +426,7 @@ class GetTokenProtocolPhoneWorker(GetTokenProtocolOAuthWorker):
                 locale=locale,
                 phone_country_code=phone_country_code,
                 phone_number=phone_number,
+                tencent_captcha=tencent_captcha,
             )
             if str(attempt.get("action") or "") != "sms_code":
                 raise RuntimeError(f"GetToken Portal 未返回 sms_code action: {attempt}")

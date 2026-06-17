@@ -142,13 +142,13 @@ export function ExportMenu({
                       {filteredFields.map((field) => {
                         const checked = selectedFields.includes(field.key)
                         return (
-                          <label key={field.key} className={`flex items-center justify-between gap-3 rounded-md px-2.5 py-2 text-sm transition-colors ${checked ? 'bg-[var(--color-accent-muted)] text-[var(--color-text)]' : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)]'}`}>
+                          <label key={field.key} className={`flex items-center justify-between gap-3 rounded-md px-2.5 py-2 text-sm transition-colors ${checked ? 'bg-[var(--color-accent-soft)] text-[var(--color-text)]' : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)]'}`}>
                             <span className="min-w-0">
                               <span className="font-medium">{field.label}</span>
                               <span className="ml-2 font-mono text-[11px] text-[var(--color-text-muted)]">{field.key}</span>
                             </span>
                             <span className="flex items-center gap-2">
-                              <button type="button" onClick={(event) => { event.preventDefault(); selectOnly(field.key) }} className="text-[11px] text-[var(--color-accent-text)] hover:underline">只选</button>
+                              <button type="button" onClick={(event) => { event.preventDefault(); selectOnly(field.key) }} className="text-[11px] text-[var(--color-text)] hover:underline">只选</button>
                               <input type="checkbox" checked={checked} onChange={() => toggleField(field.key)} className="checkbox-accent" />
                             </span>
                           </label>

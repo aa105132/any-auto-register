@@ -18,7 +18,6 @@ from pathlib import Path
 from typing import Any, Callable
 
 import requests
-
 from platforms.enter.core import (
     AUTH0_DOMAIN,
     API_AUDIENCE,
@@ -504,6 +503,8 @@ class EnterBrowserRegistrar:
             "--no-default-browser-check",
             "--window-size=1440,960",
             "--lang=en-US",
+            "--disable-translate",
+            "--disable-features=Translate,TranslateUI",
         ]
         process = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self._wait_for_cdp(port)

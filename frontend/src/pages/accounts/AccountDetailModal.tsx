@@ -1,20 +1,48 @@
 import { createPortal } from 'react-dom'
+import { useState } from 'react'
 import { Badge } from '@/components/ui/badge'
-import { X, Copy, ExternalLink } from 'lucide-react'
+import { X, Copy, ExternalLink, Coins, RefreshCw } from 'lucide-react'
 import type { Account } from '@/lib/account-utils'
 import {
-  getLifecycleStatus, getPlanState, getValidityStatus,
-  getPrimaryToken, getCashierUrl, getCredentials,
+  getPlanState, getValidityStatus,
+  getPrimaryToken, getCashierUrl, getCredentials, getBalance,
 } from '@/lib/account-utils'
+import { apiFetch } from '@/lib/utils'
+import { isTerminalTaskStatus } from '@/lib/tasks'
 
 const copy = (text: string) => {
   if (navigator.clipboard) navigator.clipboard.writeText(text)
 }
 
-export function AccountDetailModal({ acc, onClose }: { acc: Account; onClose: () => void; onSave: () => void }) {
+export function AccountDetailModal({ acc, platform, onClose }: { acc: Account; platform?: string; onClose: () => void; onSave: () => void }) {
   const token = getPrimaryToken(acc)
   const cashierUrl = getCashierUrl(acc)
   const credentials = getCredentials(acc).filter((item: any) => item?.value)
+  const plat = platform || (acc as any).platform || ''
+  const [balance, setBalance] = useState<string>(getBalance(acc))
+  const [balanceState, setBalanceState] = useState<'idle' | 'loading' | 'done' | 'error'>('idle')
+  const [balanceMsg, setBalanceMsg] = useState<string>('')
+
+  const queryBalance = async () => {
+    if (!plat) return
+    setBalanceState('loading'); setBalanceMsg('')
+    try {
+      const res = await apiFetch(`/actions/${plat}/${acc.id}/query_balance`, { method: 'POST', body: JSON.stringify({ params: {} }) })
+      const taskId = res?.task_id || res?.id
+      if (!taskId) { setBalanceState('error'); setBalanceMsg('任务创建失败'); return }
+      let task: any = null
+      for (let i = 0; i < 80; i++) {
+        await new Promise((r) => setTimeout(r, 3000))
+        try { task = await apiFetch(`/tasks/${taskId}`) } catch { continue }
+        if (task && isTerminalTaskStatus(task.status)) break
+      }
+      const bal = task?.result?.balance_usd || task?.result?.account_overview?.balance_usd || ''
+      if (bal) { setBalance(String(bal)); setBalanceState('done'); setBalanceMsg('已更新') }
+      else { setBalanceState('error'); setBalanceMsg(task?.error || '查询超时或失败') }
+    } catch (e: any) {
+      setBalanceState('error'); setBalanceMsg(String(e?.message || e))
+    }
+  }
 
   return createPortal(
     <div className="dialog-backdrop" onClick={onClose}>
@@ -38,11 +66,20 @@ export function AccountDetailModal({ acc, onClose }: { acc: Account; onClose: ()
             </div>
           </div>
 
-          <div className="flex flex-wrap gap-2">
-            <Badge variant="default">生命周期: {getLifecycleStatus(acc)}</Badge>
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge variant="default">余额: {balance ? `$${balance}` : '—'}</Badge>
             <Badge variant="success">套餐: {getPlanState(acc)}</Badge>
             <Badge variant="warning">有效: {getValidityStatus(acc)}</Badge>
             {acc.overview?.oauth_status && <Badge variant="secondary">OAuth: {acc.overview.oauth_status}</Badge>}
+            {plat === 'vellum' && (
+              <button onClick={queryBalance} disabled={balanceState === 'loading'}
+                className="btn-pill inline-flex items-center gap-1 disabled:opacity-60">
+                {balanceState === 'loading'
+                  ? <><RefreshCw className="h-3 w-3 animate-spin" />查询中…</>
+                  : <><Coins className="h-3 w-3" />查询余额</>}
+              </button>
+            )}
+            {balanceMsg && <span className={`text-xs ${balanceState === 'error' ? 'text-[var(--color-danger,#dc2626)]' : 'text-[var(--color-text-muted)]'}`}>{balanceMsg}</span>}
           </div>
 
           {credentials.length > 0 ? (

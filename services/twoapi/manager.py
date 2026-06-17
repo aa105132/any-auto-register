@@ -8,9 +8,7 @@ from typing import Any
 
 from services.twoapi.key_store import TwoAPIKeyStore
 from services.twoapi.models import TwoAPISettings, mask_secret
-from services.twoapi.plugins.anycap import AnyCapTwoAPIPlugin
-from services.twoapi.plugins.swarms import SwarmsTwoAPIPlugin
-from services.twoapi.plugins.zo import ZoTwoAPIPlugin
+from services.twoapi.plugins.thesys import ThesysTwoAPIPlugin
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DATA_DIR = ROOT / "output"
@@ -23,19 +21,7 @@ COMMON_PLUGIN_SETTING_KEYS = (
     "max_retries",
 )
 PLUGIN_SETTING_KEYS: dict[str, tuple[str, ...]] = {
-    "zo": (
-        "enabled",
-        "min_credit",
-        "auto_wake",
-        "auto_refill",
-        "request_timeout",
-        "wake_timeout",
-        "max_retries",
-        "keepalive_space_fallback",
-        "minimize_ask_context",
-    ),
-    "swarms": COMMON_PLUGIN_SETTING_KEYS,
-    "anycap": COMMON_PLUGIN_SETTING_KEYS,
+    "thesys": COMMON_PLUGIN_SETTING_KEYS,
 }
 
 
@@ -48,9 +34,7 @@ class TwoAPIManager:
         self.settings = self._load_settings()
         self.plugin_settings = self._load_plugin_settings()
         self.plugins = {
-            "zo": ZoTwoAPIPlugin(settings=self.get_plugin_settings("zo"), data_dir=self.data_dir),
-            "swarms": SwarmsTwoAPIPlugin(settings=self.get_plugin_settings("swarms"), data_dir=self.data_dir),
-            "anycap": AnyCapTwoAPIPlugin(settings=self.get_plugin_settings("anycap"), data_dir=self.data_dir),
+            "thesys": ThesysTwoAPIPlugin(settings=self.get_plugin_settings("thesys"), data_dir=self.data_dir),
         }
         self._keepalive_thread: threading.Thread | None = None
         self._keepalive_stop = threading.Event()
@@ -88,7 +72,7 @@ class TwoAPIManager:
         raw = self._load_settings_payload()
         plugins_raw = raw.get("plugins") if isinstance(raw.get("plugins"), dict) else {}
         result: dict[str, TwoAPISettings] = {}
-        for name in ("zo", "swarms", "anycap"):
+        for name in ("thesys",):
             result[name] = self._settings_from_mapping(dict(plugins_raw.get(name) or {}), base=self.settings)
         return result
 
@@ -156,8 +140,10 @@ class TwoAPIManager:
         plugins = self.list_plugins()
         return {
             "ok": True,
-            "listen": "http://127.0.0.1:6543/zo/v1",
-            "listen_urls": ["http://127.0.0.1:6543/zo/v1", "http://127.0.0.1:6543/swarms/v1", "http://127.0.0.1:6543/anycap/v1"],
+            "listen": "http://127.0.0.1:6543/thesys/v1",
+            "listen_urls": [
+                "http://127.0.0.1:6543/thesys/v1",
+            ],
             "settings": self.settings.__dict__,
             "plugin_settings": {name: self.serialize_plugin_settings(name) for name in sorted(self.plugin_settings)},
             "plugins": plugins,
@@ -220,7 +206,7 @@ class TwoAPIManager:
             raise NotImplementedError(f"插件不支持自动补号: {plugin}")
         return item.refill_accounts(count=count, concurrency=concurrency, executor_type=executor_type, extra=extra or {})
 
-    def create_key(self, *, plugin: str = "zo", note: str = "") -> dict[str, Any]:
+    def create_key(self, *, plugin: str = "thesys", note: str = "") -> dict[str, Any]:
         row = self.key_store.create(plugin=plugin, note=note)
         out = dict(row)
         out["key_preview"] = mask_secret(str(out.get("key") or ""))

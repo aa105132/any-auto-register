@@ -5,10 +5,12 @@ import hashlib
 import io
 import json
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from domain.accounts import AccountImportLine
-from infrastructure.accounts_repository import AccountsRepository
+
+if TYPE_CHECKING:
+    from infrastructure.accounts_repository import AccountsRepository
 
 
 @dataclass(slots=True)
@@ -212,7 +214,7 @@ def import_twoapi_accounts(
     records: list[dict[str, Any]] | None = None,
     lines: list[str] | None = None,
     source: str = "external",
-    repository: AccountsRepository | None = None,
+    repository: "AccountsRepository | None" = None,
 ) -> dict[str, Any]:
     parsed, errors = build_import_lines(schema, records=records, lines=lines, source=source)
     if not parsed:
@@ -224,7 +226,12 @@ def import_twoapi_accounts(
             "skipped": len(errors),
             "errors": errors,
         }
-    repo = repository or AccountsRepository()
+    if repository is None:
+        from infrastructure.accounts_repository import AccountsRepository
+
+        repo = AccountsRepository()
+    else:
+        repo = repository
     created = repo.import_lines(schema.platform, parsed)
     return {
         "plugin": schema.plugin,

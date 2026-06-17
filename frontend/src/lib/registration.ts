@@ -6,6 +6,7 @@ export const ALL_OAUTH_PROVIDERS = [
   { value: 'apple', label: 'Apple' },
   { value: 'x', label: 'X' },
   { value: 'builderid', label: 'Builder ID' },
+  { value: 'pilipala_sso', label: 'Pilipala SSO' },
 ]
 
 export const EXECUTOR_LABELS: Record<string, string> = {
@@ -79,7 +80,9 @@ export function buildRegistrationOptions(platformMeta: any) {
       options.push({
         key: `oauth:${provider}`,
         label: getOAuthProviderLabel(provider),
-        description: `使用 ${getOAuthProviderLabel(provider)} 账号自动创建平台账号`,
+        description: provider === 'pilipala_sso'
+          ? '使用 edu.pilipala.store SSO 纯协议 OAuth 授权'
+          : `使用 ${getOAuthProviderLabel(provider)} 账号自动创建平台账号`,
         identityProvider: 'oauth_browser',
         oauthProvider: provider,
       })

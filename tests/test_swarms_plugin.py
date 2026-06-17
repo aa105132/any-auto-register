@@ -107,6 +107,53 @@ def test_swarms_signup_retries_when_server_action_not_found():
     assert second_headers['Next-Action'] == '222222222222222222222222222222222222222222'
 
 
+def test_swarms_signup_falls_back_to_supabase_when_vercel_checkpoint_blocks_page():
+    client = SwarmsClient(log_fn=lambda _msg: None)
+
+    checkpoint = Mock(
+        status_code=403,
+        text='<title>Vercel Security Checkpoint</title>无法验证您的浏览器',
+    )
+    signup_response = Mock(
+        status_code=200,
+        text='{"id":"user-id","email":"demo@swarms.test"}',
+    )
+    signup_response.json.return_value = {"id": "user-id", "email": "demo@swarms.test"}
+    client.session.get = Mock(return_value=checkpoint)
+    client.session.post = Mock(return_value=signup_response)
+
+    result = client.signup('demo@swarms.test', 'Password123!')
+
+    assert result['signup_method'] == 'supabase_auth_signup_fallback'
+    assert result['fallback_reason'] == '注册页返回 Vercel Security Checkpoint'
+    assert result['supabase_user_id'] == 'user-id'
+    assert client.session.post.call_args.args[0] == 'https://db.swarms.world/auth/v1/signup'
+    assert client.session.post.call_args.kwargs['params']['redirect_to'] == 'https://swarms.world/auth/callback'
+
+
+def test_swarms_signup_falls_back_to_supabase_when_vercel_checkpoint_blocks_action():
+    client = SwarmsClient(log_fn=lambda _msg: None)
+
+    page_response = Mock(status_code=200, text='<html></html>')
+    action_response = Mock(
+        status_code=429,
+        text='<title>Vercel Security Checkpoint</title>',
+    )
+    signup_response = Mock(
+        status_code=200,
+        text='{"id":"user-id","email":"demo@swarms.test"}',
+    )
+    signup_response.json.return_value = {"id": "user-id", "email": "demo@swarms.test"}
+    client.session.get = Mock(return_value=page_response)
+    client.session.post = Mock(side_effect=[action_response, signup_response])
+
+    result = client.signup('demo@swarms.test', 'Password123!')
+
+    assert result['signup_method'] == 'supabase_auth_signup_fallback'
+    assert result['fallback_reason'] == '注册 action 返回 Vercel Security Checkpoint'
+    assert client.session.post.call_args_list[1].args[0] == 'https://db.swarms.world/auth/v1/signup'
+
+
 def test_swarms_client_uses_current_api_key_trpc_paths_and_cookie_auth():
     client = SwarmsClient(log_fn=lambda _msg: None)
     client._access_token = "access-token"
@@ -606,7 +653,12 @@ def test_swarms_browser_registration_probes_browser_proxy_and_avoids_networkidle
         'password': 'pass',
     }
     assert pages[0].goto_calls[0][0] == 'https://api.ipify.org'
-    swarms_gotos = [kwargs for url, kwargs in pages[0].goto_calls if 'swarms.world' in url]
+    swarms_gotos = [
+        kwargs
+        for page in pages
+        for url, kwargs in page.goto_calls
+        if 'swarms.world' in url
+    ]
     assert swarms_gotos
     assert all(item.get('wait_until') == 'domcontentloaded' for item in swarms_gotos)
     assert not any(item.get('wait_until') == 'networkidle' for _url, item in pages[0].goto_calls)
@@ -888,8 +940,7 @@ def test_swarms_signup_allows_rsc_chunks_that_only_contain_generic_error_text():
     get_response = Mock(status_code=200, text='<html></html>')
     post_response = Mock(
         status_code=200,
-        text='2:"$Sreact.fragment"
-4:I["static/chunks/page.js","error boundary chunk"]',
+        text='2:"$Sreact.fragment"\n4:I["static/chunks/page.js","error boundary chunk"]',
     )
     client.session.get = Mock(return_value=get_response)
     client.session.post = Mock(return_value=post_response)

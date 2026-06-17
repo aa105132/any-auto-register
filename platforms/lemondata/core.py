@@ -9,11 +9,11 @@ from urllib.parse import urljoin
 
 import requests
 
-SITE_URL = "https://lemondata.cc"
-SIGNIN_URL = "https://lemondata.cc/signin"
-DASHBOARD_URL = "https://lemondata.cc/dashboard/api"
-API_BASE = "https://api.lemondata.cc"
-LLM_API_BASE = "https://api.lemondata.cc/v1"
+SITE_URL = "https://tokenlab.sh"
+SIGNIN_URL = f"{SITE_URL}/signin"
+DASHBOARD_URL = f"{SITE_URL}/dashboard/api"
+API_BASE = "https://api.tokenlab.sh"
+LLM_API_BASE = f"{API_BASE}/v1"
 TURNSTILE_SITEKEY = "0x4AAAAAACgPfXQhg8TKlBOO"
 CHROME_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -189,6 +189,7 @@ class LemonDataClient:
         log_fn: Callable[[str], None] | None = None,
         session: requests.Session | None = None,
         timeout: float = 30.0,
+        user_agent: str = "",
     ) -> None:
         self.timeout = timeout
         self.log_fn = log_fn or (lambda message: None)
@@ -196,7 +197,7 @@ class LemonDataClient:
         if proxy:
             self.session.proxies.update({"http": proxy, "https": proxy})
         self.session.headers.update({
-            "User-Agent": CHROME_UA,
+            "User-Agent": str(user_agent or CHROME_UA).strip() or CHROME_UA,
             "Accept": "application/json, text/plain, */*",
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
         })
@@ -233,8 +234,8 @@ class LemonDataClient:
         for name, value in dict(cookies or {}).items():
             if not name or value is None:
                 continue
-            self.session.cookies.set(str(name), str(value), domain="lemondata.cc")
-            self.session.cookies.set(str(name), str(value), domain=".lemondata.cc")
+            for domain in ("tokenlab.sh", ".tokenlab.sh", "lemondata.cc", ".lemondata.cc"):
+                self.session.cookies.set(str(name), str(value), domain=domain)
     def get_captcha_policy(self) -> dict[str, Any]:
         response = self._request("GET", _site_url("api/auth/captcha-policy"), headers={"Referer": SIGNIN_URL})
         return {"ok": response.ok, "status": response.status_code, "data": _safe_json(response)}

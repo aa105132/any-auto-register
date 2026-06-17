@@ -192,6 +192,7 @@ const SELECT_FIELDS: Record<string, { label: string; value: string }[]> = {
     { label: 'Apple', value: 'apple' },
     { label: 'X', value: 'x' },
     { label: 'Builder ID', value: 'builderid' },
+    { label: 'Pilipala SSO', value: 'pilipala_sso' },
   ],
   sub_mail_mode: SUB_MAIL_MODE_OPTIONS,
   resin_scheme: [
@@ -1694,7 +1695,7 @@ export default function Settings() {
                   className={cn(
                     'w-full rounded-2xl border px-3 py-3 text-left transition-colors',
                     activeTab === id
-                      ? 'border-[var(--color-accent)] bg-[var(--color-accent-muted)] text-[var(--color-text)]'
+                      ? 'border-[var(--color-accent)] bg-[var(--color-accent-soft)] text-[var(--color-text)]'
                       : 'border-transparent text-[var(--color-text-muted)] hover:border-[var(--color-border)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-text)]'
                   )}
                 >
@@ -1735,7 +1736,7 @@ export default function Settings() {
           ) : (
             <>
               {activeTab === 'register' && (
-                <div className="rounded-lg border border-[var(--color-accent)] bg-[var(--color-accent-muted)] px-4 py-3 text-sm text-[var(--color-text-secondary)]">
+                <div className="rounded-lg border border-[var(--color-accent)] bg-[var(--color-accent-soft)] px-4 py-3 text-sm text-[var(--color-text-secondary)]">
                   普通使用者只需要理解两件事：注册身份选"系统邮箱"还是"第三方账号"，执行方式选"协议模式 / 后台浏览器自动 / 可视浏览器自动"。这里的配置只是设置默认值。
                 </div>
               )}

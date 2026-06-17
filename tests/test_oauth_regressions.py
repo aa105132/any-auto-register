@@ -79,9 +79,17 @@ class OAuthRegressionTests(unittest.TestCase):
     def test_oauth_browser_no_profile_prefers_external_chrome_before_playwright(self):
         source = inspect.getsource(oauth_browser.OAuthBrowser.__enter__)
         launch_idx = source.index('_launch_external_chromium_cdp(temp_profile')
-        fallback_idx = source.index('未找到系统 Chrome，使用 Playwright Chromium')
+        fallback_idx = source.index('未找到系统 Chrome或需代理，使用 Playwright Chromium')
         self.assertLess(launch_idx, fallback_idx)
         self.assertIn('any_auto_register_chrome_', source)
+
+    def test_oauth_browser_with_proxy_skips_external_cdp_launch(self):
+        source = inspect.getsource(oauth_browser.OAuthBrowser.__enter__)
+        self.assertIn('proxy configured; skip external CDP', source)
+        self.assertIn('需代理', source)
+        proxy_idx = source.index('proxy configured; skip external CDP')
+        cdp_idx = source.index('_launch_external_chromium_cdp(temp_profile')
+        self.assertLess(proxy_idx, cdp_idx)
 
     def test_oauth_browser_default_does_not_auto_reuse_running_cdp(self):
         import inspect as _inspect

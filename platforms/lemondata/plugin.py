@@ -79,6 +79,7 @@ class LemonDataPlatform(BasePlatform):
                 "cookies": dict(result.get("cookies") or {}),
                 "cookie_header": str(result.get("cookie_header") or ""),
                 "captured_requests": list(result.get("captured_requests") or []),
+                "browser_user_agent": str(result.get("browser_user_agent") or ""),
                 "site_url": SITE_URL,
                 "dashboard_url": DASHBOARD_URL,
                 "api_base": LLM_API_BASE,
@@ -104,7 +105,9 @@ class LemonDataPlatform(BasePlatform):
                 verification_link_callback=artifacts.verification_link_callback,
             ),
             link_spec=LinkSpec(
-                keyword="LemonData",
+                # LemonData 使用 Auth.js Email Provider，实际邮件标题/正文可能只包含
+                # “Sign in” 与 /api/auth/callback/email，不保证出现平台名。
+                keyword="",
                 timeout=180,
                 wait_message="等待 LemonData Magic Link 邮件...",
                 success_label="LemonData 验证链接",

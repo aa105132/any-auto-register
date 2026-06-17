@@ -1,4 +1,4 @@
-﻿import unittest
+import unittest
 from unittest.mock import patch
 
 from core.base_phone import PhoneAccount
@@ -101,13 +101,14 @@ class GetTokenPluginTests(unittest.TestCase):
             def fetch_login_providers(self, *, app_id, origin):
                 return {"providers": [{"channel": "PHONE_SMS"}]}
 
-            def create_sms_attempt(self, *, app_id, origin, locale, phone_country_code, phone_number):
+            def create_sms_attempt(self, *, app_id, origin, locale, phone_country_code, phone_number, tencent_captcha=None):
                 self.created_payload = {
                     "app_id": app_id,
                     "origin": origin,
                     "locale": locale,
                     "phone_country_code": phone_country_code,
                     "phone_number": phone_number,
+                    "tencent_captcha": tencent_captcha or {},
                 }
                 return {"action": "sms_code", "attemptId": "attempt-1", "phoneNumber": phone_number}
 
@@ -136,6 +137,81 @@ class GetTokenPluginTests(unittest.TestCase):
         self.assertEqual(result["email"], "+8613800138000")
         self.assertEqual(result["registration_note"], "protocol_phone_sms")
         self.assertEqual(result["phone"]["project_id"], "114190")
+
+
+    def test_phone_worker_sends_tencent_captcha_payload_when_required(self):
+        class FakeSolver:
+            def __init__(self):
+                self.calls = []
+
+            def solve_tencent_captcha(self, page_url, captcha_app_id, *, locale="en"):
+                self.calls.append((page_url, captcha_app_id, locale))
+                return {"ticket": "ticket-ok", "randstr": "rand-ok"}
+
+        class FakePhoneProvider:
+            def get_phone(self):
+                return PhoneAccount(phone="13800138000", project_id="p1", provider_name="fake")
+
+            def wait_for_code(self, account, timeout=180, poll_interval=15, code_pattern=None):
+                return "123456"
+
+        class FakePhoneWorker(GetTokenProtocolPhoneWorker):
+            def __init__(self):
+                super().__init__(log_fn=lambda message: None)
+                self.created_payload = None
+
+            def check_user(self):
+                return {"success": True, "data": {"isLoggedIn": False, "user": None}}
+
+            def fetch_login_providers(self, *, app_id, origin):
+                return {"providers": [{
+                    "channel": "PHONE_SMS",
+                    "tencentCaptchaEnabled": True,
+                    "tencentCaptchaAppId": "194455083",
+                }]}
+
+            def create_sms_attempt(self, *, app_id, origin, locale, phone_country_code, phone_number, tencent_captcha=None):
+                self.created_payload = dict(tencent_captcha=tencent_captcha or {})
+                return {"action": "sms_code", "attemptId": "attempt-1", "phoneNumber": phone_number}
+
+            def complete_sms_attempt(self, *, attempt_id, code):
+                return {"result": {"loginToken": "portal-token", "phoneE164": "+8613800138000"}}
+
+            def portal_login(self, *, login_token, referral_code="", referral_slug=""):
+                return {"success": True, "data": {"user": {"id": "u-phone", "phoneE164": "+8613800138000"}}}
+
+            def extract_or_create_api_key(self, *, create_api_key=True):
+                return "gt-phone-key", {}
+
+        solver = FakeSolver()
+        worker = FakePhoneWorker()
+        result = worker.run(phone_provider=FakePhoneProvider(), captcha_solver=solver)
+
+        self.assertEqual(worker.created_payload["tencent_captcha"], {"ticket": "ticket-ok", "randstr": "rand-ok"})
+        self.assertEqual(solver.calls[0][1], "194455083")
+        self.assertIn("preferredChannel=PHONE_SMS", solver.calls[0][0])
+        self.assertEqual(result["api_key"], "gt-phone-key")
+
+    def test_phone_captcha_solver_alias_tulingcloud_wraps_cdp_solver(self):
+        platform = GetTokenPlatform(RegisterConfig(
+            executor_type="protocol",
+            captcha_solver="tulingcloud",
+            extra={"identity_provider": "phone"},
+        ))
+
+        class FakeCtx:
+            extra = {"gettoken_phone_captcha_solver": "tulingcloud"}
+
+        class FakeSolver:
+            def solve_tencent_captcha(self, page_url, captcha_app_id, *, locale="en"):
+                return {"ticket": "ticket", "randstr": "rand"}
+
+        with patch("core.base_captcha.create_captcha_solver", return_value=FakeSolver()) as factory:
+            solver = platform._make_gettoken_phone_captcha_solver(FakeCtx())
+
+        factory.assert_called_once_with("cdp_turnstile", platform.config.extra)
+        self.assertTrue(hasattr(solver, "solve_tencent_captcha"))
+
 
     def test_google_prompt_labels_include_chinese_without_mojibake(self):
         labels = list(gettoken_browser_oauth.GOOGLE_TOS_LABELS) + list(gettoken_browser_oauth.GOOGLE_CONSENT_LABELS)

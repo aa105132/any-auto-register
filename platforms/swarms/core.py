@@ -121,6 +121,65 @@ class SwarmsClient:
         except Exception:
             return {"raw": resp.text}
 
+    @staticmethod
+    def _is_vercel_security_checkpoint(status_code: int, text: str) -> bool:
+        if int(status_code or 0) not in (403, 429):
+            return False
+        body = str(text or "")
+        return (
+            "Vercel Security Checkpoint" in body
+            or "无法验证您的浏览器" in body
+            or "正在验证您的浏览器" in body
+            or "Security Checkpoint" in body
+        )
+
+    def _direct_supabase_signup(self, email: str, password: str, *, fingerprint: str = "", reason: str = "") -> dict:
+        """Swarms 页面被 Vercel 安全检查拦截时，用 GoTrue 兜底发送确认邮件。
+
+        这个兜底只负责创建/确认 Supabase 用户。确认后仍会继续沿用现有登录、
+        补资料、查额度、建 API Key 流程；如果后续 swarms.world tRPC 继续被
+        安全检查拦截，会在对应步骤给出明确错误。
+        """
+        if reason:
+            self.log(f"Swarms Server Action 不可用，回退 Supabase Auth 注册: {reason}")
+        else:
+            self.log("Swarms Server Action 不可用，回退 Supabase Auth 注册")
+        headers = {"Content-Type": "application/json"}
+        params = {"redirect_to": f"{SWARMS_BASE}/auth/callback"}
+        payload = {
+            "email": email,
+            "password": password,
+            "data": {
+                "email": email,
+                "signup_method": "any_auto_register_protocol",
+                "fingerprint": fingerprint,
+            },
+            "gotrue_meta_security": {},
+        }
+        resp = self._session_post(
+            f"{SUPABASE_AUTH}/signup",
+            json=payload,
+            headers=headers,
+            params=params,
+            timeout=30,
+        )
+        if resp.status_code >= 400:
+            self.log(f"Swarms Supabase signup 失败 {resp.status_code}: {resp.text[:500]}")
+            resp.raise_for_status()
+        try:
+            data = resp.json()
+        except Exception:
+            data = {"raw": resp.text}
+        return {
+            "ok": True,
+            "email": email,
+            "signup_method": "supabase_auth_signup_fallback",
+            "fingerprint": fingerprint,
+            "fallback_reason": reason,
+            "supabase_user_id": str(data.get("id") or ""),
+            "raw_preview": resp.text[:500],
+        }
+
     def _get(self, url: str, *, auth: bool = True) -> dict:
         headers = {}
         if auth:
@@ -192,6 +251,8 @@ class SwarmsClient:
 
         def _load_signup_action_id() -> str:
             page_resp = self._session_get(SWARMS_SIGNUP_PAGE, timeout=30)
+            if self._is_vercel_security_checkpoint(page_resp.status_code, page_resp.text):
+                raise RuntimeError("vercel_security_checkpoint")
             if page_resp.status_code >= 400:
                 self.log(f"Swarms 注册页请求失败 {page_resp.status_code}: {page_resp.text[:300]}")
                 page_resp.raise_for_status()
@@ -219,16 +280,50 @@ class SwarmsClient:
             )
             return response
 
-        action_id = _load_signup_action_id()
+        try:
+            action_id = _load_signup_action_id()
+        except RuntimeError as exc:
+            if "vercel_security_checkpoint" in str(exc):
+                return self._direct_supabase_signup(
+                    email,
+                    password,
+                    fingerprint=fingerprint,
+                    reason="注册页返回 Vercel Security Checkpoint",
+                )
+            raise
         resp = _post_signup_action(action_id)
         text = resp.text or ""
+        if self._is_vercel_security_checkpoint(resp.status_code, text):
+            return self._direct_supabase_signup(
+                email,
+                password,
+                fingerprint=fingerprint,
+                reason="注册 action 返回 Vercel Security Checkpoint",
+            )
         if resp.status_code == 404 and "Server action not found" in text:
             self.log("Swarms 注册 action 已失效，刷新注册页重新解析 action...")
-            refreshed_action_id = _load_signup_action_id()
+            try:
+                refreshed_action_id = _load_signup_action_id()
+            except RuntimeError as exc:
+                if "vercel_security_checkpoint" in str(exc):
+                    return self._direct_supabase_signup(
+                        email,
+                        password,
+                        fingerprint=fingerprint,
+                        reason="刷新注册 action 时返回 Vercel Security Checkpoint",
+                    )
+                raise
             if refreshed_action_id and refreshed_action_id != action_id:
                 action_id = refreshed_action_id
                 resp = _post_signup_action(action_id)
                 text = resp.text or ""
+                if self._is_vercel_security_checkpoint(resp.status_code, text):
+                    return self._direct_supabase_signup(
+                        email,
+                        password,
+                        fingerprint=fingerprint,
+                        reason="刷新后的注册 action 返回 Vercel Security Checkpoint",
+                    )
         if resp.status_code >= 400:
             self.log(f"Swarms 注册 action 失败 {resp.status_code}: {text[:500]}")
             resp.raise_for_status()
@@ -511,6 +606,8 @@ class SwarmsClient:
                 timeout=30,
             )
         if resp.status_code >= 400:
+            if self._is_vercel_security_checkpoint(resp.status_code, resp.text):
+                raise RuntimeError("Swarms tRPC 被 Vercel Security Checkpoint 拦截，请更换可访问 swarms.world 的代理或切换浏览器模式")
             self.log(f"tRPC error {resp.status_code}: {resp.text[:500]}")
             resp.raise_for_status()
         try:

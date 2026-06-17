@@ -23,6 +23,15 @@ class LemonDataPlatformTests(unittest.TestCase):
         self.assertIn("google", platform.supported_oauth_providers)
         self.assertIn("cdp_protocol", platform.supported_executors)
 
+    def test_protocol_urls_use_tokenlab_domain(self):
+        from platforms.lemondata.core import API_BASE, DASHBOARD_URL, LLM_API_BASE, SIGNIN_URL, SITE_URL
+
+        self.assertEqual(SITE_URL, "https://tokenlab.sh")
+        self.assertEqual(SIGNIN_URL, "https://tokenlab.sh/signin")
+        self.assertEqual(DASHBOARD_URL, "https://tokenlab.sh/dashboard/api")
+        self.assertEqual(API_BASE, "https://api.tokenlab.sh")
+        self.assertEqual(LLM_API_BASE, "https://api.tokenlab.sh/v1")
+
     def test_mailbox_flow_uses_turnstile_and_authjs_magic_link(self):
         self.assertEqual(protocol_mailbox.TURNSTILE_SITEKEY, "0x4AAAAAACgPfXQhg8TKlBOO")
         source = inspect.getsource(protocol_mailbox.LemonDataProtocolMailboxWorker.run)
@@ -32,6 +41,26 @@ class LemonDataPlatformTests(unittest.TestCase):
         self.assertIn("create_or_find_api_key", source)
         self.assertIn("bootstrap_cdp_challenge", source)
 
+    def test_mailbox_link_spec_does_not_filter_authjs_generic_subject(self):
+        adapter = LemonDataPlatform().build_protocol_mailbox_adapter()
+        self.assertEqual(adapter.link_spec.keyword, "")
+
+    def test_generic_extractor_accepts_lemondata_authjs_magic_link(self):
+        from core.base_mailbox import _extract_verification_link
+
+        body = (
+            'Sign in to your account '
+            '<a href="https://tokenlab.sh/api/auth/callback/email?'
+            'callbackUrl=https%3A%2F%2Ftokenlab.sh%2Fdashboard%2Fapi'
+            '&token=abc123&email=demo%40example.com">Sign in</a>'
+        )
+
+        self.assertEqual(
+            _extract_verification_link(body, keyword=""),
+            "https://tokenlab.sh/api/auth/callback/email?"
+            "callbackUrl=https%3A%2F%2Ftokenlab.sh%2Fdashboard%2Fapi"
+            "&token=abc123&email=demo%40example.com",
+        )
 
     def test_oauth_defaults_to_isolated_profile_when_cdp_url_is_shared(self):
         self.assertTrue(hasattr(browser_oauth, "isolated_oauth_browser_options"))
@@ -96,7 +125,7 @@ class LemonDataPlatformTests(unittest.TestCase):
         self.assertEqual(result.email, "demo@example.com")
         self.assertEqual(result.token, "ld_sk_demo")
         self.assertEqual(result.extra["ai_api_token"], "ld_sk_demo")
-        self.assertEqual(result.extra["api_base"], "https://api.lemondata.cc/v1")
+        self.assertEqual(result.extra["api_base"], "https://api.tokenlab.sh/v1")
         self.assertEqual(result.extra["auth_header"], "Authorization: Bearer")
 
     def test_oauth_register_accepts_allow_shared_cdp_flag(self):
@@ -111,6 +140,20 @@ class LemonDataPlatformTests(unittest.TestCase):
         source = inspect.getsource(browser_oauth.register_with_browser_oauth)
         self.assertIn("HTTP 创建 API Key 失败，改用浏览器同源 fetch", source)
         self.assertIn("_create_api_key_in_browser", source)
+
+    def test_oauth_http_replay_uses_browser_user_agent(self):
+        signature = inspect.signature(browser_oauth._create_api_key_http)
+        self.assertIn("user_agent", signature.parameters)
+        source = inspect.getsource(browser_oauth.register_with_browser_oauth)
+        self.assertIn("navigator.userAgent", source)
+        self.assertIn("user_agent=browser_user_agent", source)
+        mapped = LemonDataPlatform()._map_result({
+            "email": "demo@example.com",
+            "api_key": "ld_sk_demo",
+            "balance_result": {"ok": True, "amount": 1.0},
+            "browser_user_agent": "UA-from-browser",
+        })
+        self.assertEqual(mapped.extra["browser_user_agent"], "UA-from-browser")
 
 
 if __name__ == "__main__":

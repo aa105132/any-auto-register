@@ -6,8 +6,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_swarms_plugin_does_not_import_task_runtime_at_module_import():
-    source = (ROOT / "services" / "twoapi" / "plugins" / "swarms.py").read_text(encoding="utf-8")
+def test_thesys_plugin_does_not_import_task_runtime_at_module_import():
+    source = (ROOT / "services" / "twoapi" / "plugins" / "thesys.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     forbidden_modules = {"application.tasks", "services.task_runtime"}
     imported: list[str] = []

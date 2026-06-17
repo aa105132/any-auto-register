@@ -159,6 +159,14 @@ class MailboxRuntimeTests(unittest.TestCase):
 
         self.assertIsNone(captured["proxy"])
 
+
+    def test_yyds_mail_mailbox_can_disable_environment_proxy_and_keep_direct_mode(self):
+        from core.base_mailbox import YydsMailMailbox
+
+        mailbox = YydsMailMailbox(api_base_url="https://maliapi.example.com", api_key="demo-key", proxy=None)
+        self.assertFalse(getattr(mailbox._session, "trust_env", True))
+        self.assertEqual(getattr(mailbox._session, "proxies", {}), {})
+
     def test_attach_identity_metadata_merges_mailbox_credentials_without_overwrite(self):
         platform = _DummyPlatform(RegisterConfig(extra={"mail_provider": "cfworker"}))
         account = Account(

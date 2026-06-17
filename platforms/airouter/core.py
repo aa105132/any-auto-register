@@ -1,6 +1,7 @@
 """AI-ROUTER 协议注册与 API Key 创建。"""
 from __future__ import annotations
 
+import random
 import time
 from typing import Any
 
@@ -17,6 +18,39 @@ ME_URL = f"{API_BASE}/auth/me"
 KEYS_URL = f"{API_BASE}/keys"
 GROUPS_AVAILABLE_URL = f"{API_BASE}/groups/available"
 MODELS_URL = "https://api.ai-router.dev/v1/models"
+
+
+_CHROME_MAJOR_VERSIONS = (136, 137, 138, 139, 140, 141, 142, 143)
+
+
+def build_airouter_browser_fingerprint(seed: str = "") -> dict[str, Any]:
+    """为单个注册账号生成一套轻量浏览器指纹。
+
+    目标不是伪装完整设备，而是保证同一账号内的 Turnstile、发码、注册
+    使用一致的 UA / Client Hints / 语言 / 视口；不同账号之间自然隔离。
+    """
+    rng = random.Random(seed or f"{time.time_ns()}-{random.random()}")
+    major = rng.choice(_CHROME_MAJOR_VERSIONS)
+    build = rng.randint(0, 7390)
+    patch = rng.randint(40, 180)
+    width, height = rng.choice(((1366, 768), (1440, 900), (1536, 864), (1600, 900), (1920, 1080)))
+    locale = rng.choice(("en-US", "en-US", "en-GB"))
+    platform = "Windows"
+    ua = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        f"Chrome/{major}.0.{build}.{patch} Safari/537.36"
+    )
+    return {
+        "user_agent": ua,
+        "accept_language": f"{locale},{locale.split('-')[0]};q=0.9",
+        "locale": locale,
+        "platform": platform,
+        "viewport_width": width,
+        "viewport_height": height,
+        "device_scale_factor": rng.choice((1, 1, 1.25)),
+        "chrome_major": major,
+    }
 
 
 def _safe_json(response: Any) -> dict[str, Any]:
@@ -66,10 +100,13 @@ def _find_api_key(data: Any) -> str:
 
 
 class AiRouterClient:
-    def __init__(self, *, proxy: str | None = None, log_fn=print) -> None:
+    def __init__(self, *, proxy: str | None = None, log_fn=print, browser_fingerprint: dict[str, Any] | None = None) -> None:
         self.proxy = proxy
         self.log = log_fn or (lambda _msg: None)
+        self.browser_fingerprint = dict(browser_fingerprint or build_airouter_browser_fingerprint())
         self.session = requests.Session()
+        # 禁止 requests 继承 HTTP_PROXY/HTTPS_PROXY/系统代理；AI-ROUTER 必须只走任务代理。
+        self.session.trust_env = False
         if proxy:
             self.session.proxies.update({"http": proxy, "https": proxy})
         self.session.headers.update({
@@ -77,8 +114,16 @@ class AiRouterClient:
             "Content-Type": "application/json",
             "Origin": "https://ai-router.dev",
             "Referer": REGISTER_URL,
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36",
+            "User-Agent": str(self.browser_fingerprint.get("user_agent") or ""),
+            "Accept-Language": str(self.browser_fingerprint.get("accept_language") or "en-US,en;q=0.9"),
+            "Sec-CH-UA": self._sec_ch_ua(),
+            "Sec-CH-UA-Mobile": "?0",
+            "Sec-CH-UA-Platform": f'"{self.browser_fingerprint.get("platform") or "Windows"}"',
         })
+
+    def _sec_ch_ua(self) -> str:
+        major = str(self.browser_fingerprint.get("chrome_major") or "140")
+        return f'"Chromium";v="{major}", "Google Chrome";v="{major}", "Not=A?Brand";v="24"'
 
     def _l(self, msg: str) -> None:
         self.log(f"[AI-ROUTER] {msg}")

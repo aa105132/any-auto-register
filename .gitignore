@@ -121,3 +121,9 @@ scripts/run_grok_browser_once_no_captcha.py
 scripts/run_gumloop_parallel.py
 scripts/run_hpcai_once.py
 scripts/test_portal_url.py
+
+# Vellum 一次性探针脚本与凭证/结果输出（含真实 API key，禁止提交）
+scripts/_vellum_*
+# Windows 误生成的垃圾文件
+frontend/nul
+

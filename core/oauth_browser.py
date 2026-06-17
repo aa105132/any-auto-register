@@ -20,6 +20,7 @@ OAUTH_PROVIDER_LABELS = {
     "apple": "Apple",
     "x": "X",
     "builderid": "Builder ID",
+    "pilipala_sso": "Pilipala SSO",
 }
 
 OAUTH_PROVIDER_HINTS = {
@@ -30,6 +31,7 @@ OAUTH_PROVIDER_HINTS = {
     "apple": ("apple",),
     "x": ("x", "twitter"),
     "builderid": ("builder id", "builderid", "aws builder id", "amazon q"),
+    "pilipala_sso": ("sso", "single sign-on", "pilipala", "edu.pilipala.store"),
 }
 
 
@@ -240,7 +242,12 @@ def _cleanup_owned_temp_profile(user_data_dir: str, *, log_fn: Callable[[str], N
 
 
 def _launch_external_chromium_cdp(user_data_dir: str, *, port: int = 0, initial_url: str = "about:blank", log_fn: Callable[[str], None] = print) -> tuple[str, object | None]:
-    """Launch a visible system Chrome/Edge and return its CDP URL."""
+    """Launch a visible system Chrome/Edge and return its CDP URL.
+
+    注意：这个裸 CDP 启动路径不能可靠注入带账号密码的代理。
+    OAuthBrowser 在传入 proxy 时会跳过该路径，改用 Playwright 原生
+    proxy 配置，避免页面请求绕过 Resin/任务代理直连。
+    """
     import random
     import subprocess
 
@@ -400,7 +407,14 @@ class OAuthBrowser:
                 self.page = pages[0] if pages else self.context.new_page()
             else:
                 temp_profile = str(Path(tempfile.gettempdir()) / f"any_auto_register_chrome_{uuid.uuid4().hex}")
-                cdp_url, process = _launch_external_chromium_cdp(temp_profile, log_fn=self.log)
+                cdp_url, process = "", None
+                if proxy_cfg:
+                    # 外部 Chrome CDP 无法可靠处理带认证代理；这里必须走
+                    # Playwright launch(proxy=...)，保证页面、XHR、OAuth 跳转都
+                    # 使用任务代理/Resin，而不是只让后续 requests.Session 走代理。
+                    self.log("[OAuthBrowser] proxy configured; skip external CDP and launch browser with Playwright proxy")
+                else:
+                    cdp_url, process = _launch_external_chromium_cdp(temp_profile, log_fn=self.log)
                 if cdp_url:
                     self.chrome_cdp_url = cdp_url
                     self._owns_cdp_browser = True
@@ -411,8 +425,9 @@ class OAuthBrowser:
                     pages = self.context.pages
                     self.page = pages[0] if pages else self.context.new_page()
                 else:
-                    # 最后兜底才使用 Playwright Chromium。
-                    self.log("[OAuthBrowser] 未找到系统 Chrome，使用 Playwright Chromium")
+                    # 最后兜底才使用 Playwright Chromium；有 proxy 时这是首选路径，
+                    # 因为 Playwright 能正确拆分 server/username/password。
+                    self.log("[OAuthBrowser] 未找到系统 Chrome或需代理，使用 Playwright Chromium")
                     launch_kwargs = {"headless": self.headless}
                     if proxy_cfg:
                         launch_kwargs["proxy"] = proxy_cfg

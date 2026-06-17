@@ -116,7 +116,8 @@ def resolve_resin_proxy_config(
     scheme = _normalize_scheme(config.get("resin_scheme"))
     host = str(config.get("resin_host") or "").strip()
     port = _normalize_port(config.get("resin_port"))
-    token = str(config.get("resin_token") or "").strip()
+    # 兼容旧 UI/配置里把 Resin token 填在 resin_password 的情况。
+    token = str(config.get("resin_token") or config.get("resin_password") or "").strip()
     resolved_platform = resolve_resin_platform(
         task_platform=task_platform,
         default_platform=config.get("resin_default_platform", "Default"),

@@ -38,6 +38,12 @@ OAUTH_PROVIDER_ALIASES = {
     "builder id": "builderid",
     "awsbuilderid": "builderid",
     "aws builder id": "builderid",
+    "sso": "pilipala_sso",
+    "pilipala": "pilipala_sso",
+    "pilipala-sso": "pilipala_sso",
+    "pilipala_sso": "pilipala_sso",
+    "edu_pilipala": "pilipala_sso",
+    "edu.pilipala.store": "pilipala_sso",
 }
 
 

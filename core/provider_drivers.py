@@ -195,6 +195,13 @@ MAILBOX_DRIVER_TEMPLATES = [
 ]
 
 
+PHONE_FILTER_FIELDS = [
+    {"key": "phone_number", "label": "指定手机号（可选）", "placeholder": "完整手机号；留空随机取号", "category": "task"},
+    {"key": "phone_segment", "label": "指定号段（可选）", "placeholder": "如 162 或 162,165；留空不过滤", "category": "task"},
+    {"key": "phone_filter_attempts", "label": "号段/指定手机号重试次数", "placeholder": "5", "category": "task"},
+]
+
+
 PHONE_DRIVER_TEMPLATES = [
     {
         "provider_type": "phone",
@@ -215,6 +222,12 @@ PHONE_DRIVER_TEMPLATES = [
             {"key": "haozhu_project_id", "label": "项目 ID / sid", "placeholder": "1000", "category": "task"},
             {"key": "haozhu_uid", "label": "对接码 UID（可选）", "placeholder": "只取指定对接码", "category": "task"},
             {"key": "haozhu_author", "label": "开发者账号（可选）", "placeholder": "用于消费分成", "category": "task"},
+            {"key": "haozhu_isp", "label": "运营商过滤（可选）", "placeholder": "isp，如 1=中国移动", "category": "task"},
+            {"key": "haozhu_province", "label": "号码省份（可选）", "placeholder": "Province，如 44=广东", "category": "task"},
+            {"key": "haozhu_ascription", "label": "号码类型（可选）", "placeholder": "1=虚拟，2=实卡", "category": "task"},
+            {"key": "haozhu_paragraph", "label": "豪猪只取号段（可选）", "placeholder": "paragraph，如 162", "category": "task"},
+            {"key": "haozhu_exclude", "label": "排除号段（可选）", "placeholder": "exclude", "category": "task"},
+            *PHONE_FILTER_FIELDS,
             {"key": "haozhu_poll_interval", "label": "短信轮询间隔秒数", "placeholder": "15", "category": "connection"},
             {"key": "haozhu_phone_timeout", "label": "短信等待超时秒数", "placeholder": "180", "category": "connection"},
         ],
@@ -239,8 +252,48 @@ PHONE_DRIVER_TEMPLATES = [
             {"key": "qianchuan_phone_num", "label": "指定手机号（可选）", "placeholder": "phoneNum，可留空随机取号", "category": "task"},
             {"key": "qianchuan_operator", "label": "运营商过滤", "placeholder": "0=全部，5=虚拟，4=非虚拟", "category": "task"},
             {"key": "qianchuan_scope", "label": "地区范围（可选）", "category": "task", "placeholder": "scope"},
+            *PHONE_FILTER_FIELDS,
             {"key": "qianchuan_poll_interval", "label": "短信轮询间隔秒数", "placeholder": "5", "category": "connection"},
             {"key": "qianchuan_phone_timeout", "label": "短信等待超时秒数", "placeholder": "180", "category": "connection"},
+        ],
+    },
+    {
+        "provider_type": "phone",
+        "driver_type": "5sim_api",
+        "label": "5sim API",
+        "description": "5sim 手机号接码平台。使用 API Token 购买号码，按订单 ID 轮询短信，支持释放和拉黑订单。",
+        "default_auth_mode": "api_key",
+        "auth_modes": [
+            {"value": "api_key", "label": "API Token"},
+        ],
+        "fields": [
+            {"key": "5sim_api_base_url", "label": "API URL", "placeholder": "https://5sim.net", "category": "connection"},
+            {"key": "5sim_api_token", "label": "API Token", "secret": True, "category": "auth"},
+            {"key": "5sim_country", "label": "国家 / country", "placeholder": "any / china / russia", "category": "task"},
+            {"key": "5sim_operator", "label": "运营商 / operator", "placeholder": "any", "category": "task"},
+            {"key": "5sim_product", "label": "产品 / product", "placeholder": "openai / telegram / google", "category": "task"},
+            {"key": "5sim_max_price", "label": "最高价格（可选）", "placeholder": "maxPrice", "category": "task"},
+            *PHONE_FILTER_FIELDS,
+            {"key": "5sim_poll_interval", "label": "短信轮询间隔秒数", "placeholder": "5", "category": "connection"},
+            {"key": "5sim_phone_timeout", "label": "短信等待超时秒数", "placeholder": "180", "category": "connection"},
+        ],
+    },
+    {
+        "provider_type": "phone",
+        "driver_type": "apicc_sms_api",
+        "label": "api.cc 免费接码",
+        "description": "api.cc 公共免费号池（https://api.cc/home/index/free.html）。号码为共享公共号，短信全局可见、可重复用于无限次注册。填入要用的号码即可；可选按发送方过滤短信（如 Vellum/WorkOS 发送方 732873）。",
+        "default_auth_mode": "public_free",
+        "auth_modes": [
+            {"value": "public_free", "label": "免登录公共号池"},
+        ],
+        "fields": [
+            {"key": "apicc_api_base_url", "label": "API URL", "placeholder": "https://api.cc", "category": "connection"},
+            {"key": "apicc_phone_number", "label": "手机号（公共号池中的号码）", "placeholder": "如 18194816943（可配置，不固定）", "category": "task"},
+            {"key": "apicc_country_code", "label": "国家码", "placeholder": "+1", "category": "task"},
+            {"key": "apicc_sender", "label": "发送方过滤（可选）", "placeholder": "如 732873；多个用逗号分隔，留空不过滤", "category": "task"},
+            {"key": "apicc_poll_interval", "label": "短信轮询间隔秒数", "placeholder": "5", "category": "connection"},
+            {"key": "apicc_phone_timeout", "label": "短信等待超时秒数", "placeholder": "180", "category": "connection"},
         ],
     },
 ]
@@ -300,6 +353,25 @@ CAPTCHA_DRIVER_TEMPLATES = [
             {"key": "harvester_headless", "label": "无头模式 (仅调试)", "placeholder": "false", "category": "connection"},
             {"key": "harvester_max_contexts", "label": "最大并发上下文", "placeholder": "3", "category": "connection"},
             {"key": "harvester_proxy", "label": "代理", "placeholder": "http://user:pass@host:port", "category": "connection"},
+        ],
+    },
+    {
+        "provider_type": "captcha",
+        "driver_type": "tulingcloud_api",
+        "label": "图灵云 / fdyscloud API",
+        "description": "调用 tulingcloud/fdyscloud 图片识别接口，当前用于辅助腾讯滑块自动拖动。",
+        "default_auth_mode": "username_password",
+        "auth_modes": [
+            {"value": "username_password", "label": "用户名密码"},
+            {"value": "token", "label": "UserToken"},
+        ],
+        "fields": [
+            {"key": "tuling_api_base", "label": "API Base URL", "placeholder": "http://www.tulingcloud.com", "category": "connection"},
+            {"key": "tuling_username", "label": "用户名", "category": "auth"},
+            {"key": "tuling_password", "label": "密码", "secret": True, "category": "auth"},
+            {"key": "tuling_usertoken", "label": "UserToken", "secret": True, "category": "auth"},
+            {"key": "tuling_slider_model_id", "label": "滑块模型 ID", "placeholder": "48956156", "category": "task"},
+            {"key": "tuling_developer", "label": "开发者账号（可选）", "category": "task"},
         ],
     },
 ]
@@ -398,6 +470,20 @@ BUILTIN_PROVIDER_DEFINITIONS = [
         "driver_type": "qianchuan_sms_api",
     },
     {
+        "provider_type": "phone",
+        "provider_key": "5sim",
+        "label": "5sim",
+        "description": "5sim 手机号来源，支持按国家、运营商和产品购买号码并轮询短信验证码。",
+        "driver_type": "5sim_api",
+    },
+    {
+        "provider_type": "phone",
+        "provider_key": "apicc",
+        "label": "api.cc 免费接码",
+        "description": "api.cc 公共免费号池手机号来源，填入公共号即可重复接码（一个号可注册无限账号），可选按发送方过滤短信。",
+        "driver_type": "apicc_sms_api",
+    },
+    {
         "provider_type": "captcha",
         "provider_key": "local_solver",
         "label": "本地 Solver (Camoufox)",
@@ -431,6 +517,13 @@ BUILTIN_PROVIDER_DEFINITIONS = [
         "label": "Patchright 本地 Harvester",
         "description": "本地无头 Chromium 过 Turnstile，不依赖打码平台。Venice 协议模式首选。",
         "driver_type": "patchright_harvester",
+    },
+    {
+        "provider_type": "captcha",
+        "provider_key": "tulingcloud",
+        "label": "图灵云 / fdyscloud",
+        "description": "图灵验证码识别服务，辅助本地浏览器通过腾讯滑块。",
+        "driver_type": "tulingcloud_api",
     },
 ]
 

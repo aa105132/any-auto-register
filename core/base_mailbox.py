@@ -1564,6 +1564,8 @@ class YydsMailMailbox(BaseMailbox):
         email: str = "",
         proxy: str | None = None,
     ):
+        import requests
+
         self.api = _normalize_api_base_url(api_base_url, default="https://maliapi.215.im", label="YYDS Mail API URL")
         self._api_key = str(api_key or "").strip()
         self._prefix = str(prefix or "").strip()
@@ -1571,6 +1573,9 @@ class YydsMailMailbox(BaseMailbox):
         self._email = str(email or "").strip()
         self._mailbox_token = ""
         self.proxy = {"http": proxy, "https": proxy} if proxy else None
+        self._session = requests.Session()
+        self._session.trust_env = False
+        self._session.proxies = dict(self.proxy or {})
 
     def _headers(self) -> dict:
         headers = {
@@ -1587,16 +1592,16 @@ class YydsMailMailbox(BaseMailbox):
     _REQUEST_BACKOFF_BASE = 5.0  # 首次 429 等 5s，之后 10s、20s
 
     def _request_json(self, method: str, path: str, *, params: dict | None = None, json: dict | None = None):
-        import requests
         import time as _time
 
         method_name = str(method or "GET").upper()
-        request_func = requests.post if method_name == "POST" else requests.get
+        request_func = self._session.post if method_name == "POST" else self._session.get
         kwargs = {
             "headers": self._headers(),
-            "proxies": self.proxy,
             "timeout": 15,
         }
+        if self.proxy:
+            kwargs["proxies"] = self.proxy
         if method_name == "POST":
             kwargs["json"] = dict(json or {})
         else:

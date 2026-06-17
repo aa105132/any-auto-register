@@ -27,7 +27,7 @@ class TwoAPIKeyStore:
     def list(self) -> list[dict[str, Any]]:
         return self._load()
 
-    def create(self, *, plugin: str = "zo", note: str = "") -> dict[str, Any]:
+    def create(self, *, plugin: str = "thesys", note: str = "") -> dict[str, Any]:
         rows = self._load()
         key = "twoapi_" + secrets.token_urlsafe(24).replace("-", "").replace("_", "")[:32]
         row = {

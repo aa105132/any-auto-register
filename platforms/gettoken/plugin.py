@@ -1,4 +1,4 @@
-﻿"""GetToken 平台插件。
+"""GetToken 平台插件。
 
 已侦察到的注册链路（2026-05-18）：
 1. 前端通过 Portal Login SDK 打开 https://pay.imgto.link/{locale}/auth/connect/...
@@ -86,6 +86,7 @@ class GetTokenPlatform(BasePlatform):
         phone_provider = getattr(self, "phone_provider", None)
         if phone_provider is None:
             raise RuntimeError("GetToken 手机号注册需要启用并配置 phone_provider")
+        captcha_solver = self._make_gettoken_phone_captcha_solver(ctx)
         return __import__(
             "platforms.gettoken.protocol_oauth",
             fromlist=["GetTokenProtocolPhoneWorker"],
@@ -97,7 +98,22 @@ class GetTokenPlatform(BasePlatform):
             otp_timeout=int(ctx.extra.get("phone_otp_timeout", ctx.extra.get("haozhu_phone_timeout", 180)) or 180),
             poll_interval=int(ctx.extra.get("phone_poll_interval", ctx.extra.get("haozhu_poll_interval", 15)) or 15),
             code_pattern=str(ctx.extra.get("phone_code_pattern") or "").strip() or None,
+            captcha_solver=captcha_solver,
         )
+
+    def _make_gettoken_phone_captcha_solver(self, ctx):
+        """GetToken 手机号链路目前要求腾讯滑块，优先使用本地 CDP solver。"""
+        from core.base_captcha import create_captcha_solver
+
+        extra = dict(ctx.extra or {})
+        requested = str(extra.get("gettoken_phone_captcha_solver") or self.config.captcha_solver or "").strip().lower()
+        # 图灵云本身只负责识别滑块距离，实际仍需本地 Chrome 执行腾讯回调。
+        # 因此用户把 GetToken 手机号 solver 指到 tulingcloud 时，自动包进 cdp_turnstile。
+        solver_name = "cdp_turnstile" if requested in {"", "auto", "tulingcloud", "tulingcloud_api"} else requested
+        solver = create_captcha_solver(solver_name, self.config.extra)
+        if not hasattr(solver, "solve_tencent_captcha"):
+            raise RuntimeError(f"GetToken 手机号注册需要支持腾讯滑块的验证码 solver，当前 {solver_name} 不支持")
+        return solver
 
     def _run_protocol_or_browser_oauth(self, ctx) -> dict:
         portal_login_token = str(ctx.extra.get("gettoken_portal_login_token") or "").strip()
