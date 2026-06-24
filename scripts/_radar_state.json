@@ -1,0 +1,46 @@
+{
+ "send_url": "https://login.platform.vellum.ai/radar-challenge/send?user_id=user_01KVM7ZAEGZ69J3GF24872PN1H&state=dnZwoC72wbQlEnGC&redirect_uri=https%3A%2F%2Fwww.vellum.ai%2Faccounts%2Fworkos%2Flogin%2Fcallback%2F&authorization_session_id=01KVM7Z5W1FGMK4RARKEYZ3G4D",
+ "cookies": [
+  {
+   "name": "__Secure-csrftoken",
+   "value": "AV3qZrYwvfgvGOUDdz0Wc6ocMtgIQAAR",
+   "domain": ".vellum.ai",
+   "path": "/",
+   "secure": true,
+   "httpOnly": false
+  },
+  {
+   "name": "__Secure-sessionid",
+   "value": "eg3rra344pf2zjet7plt6o14kcwy0xy4",
+   "domain": "www.vellum.ai",
+   "path": "/",
+   "secure": true,
+   "httpOnly": false
+  },
+  {
+   "name": "__Host-state-01KVM7Z5W1FGMK4RARKEYZ3G4D",
+   "value": "Fe26.2*1*a4dec4dc3adc2765c353a75ef745e30e6acf8c36ed5225270065c18e15e4b40d*APoV0Y1hr3AFWP9UCI_waA*q7WKUG5-5aenq3lJbX9zApYZ-LUnI0mC28uPqb5y-plOV7FHu3VbsqTQZTMcxJVKa8nvwgfLOtuavVXIgygYncfzLHysiuZSWlG3uOig6qWNBspBn9AAiaU04AcCwNHuy7z5c9CGWIpq26QdiAgjwofp_9udEvVZvi_9F-ZUGVmSvwkC_VGHZD7auVQ1EVok_tPi22WVnkZbfuShUMsxjxZ25xPalbhH4u4wU9clUowJ5_xltP_JuflQsCSfnwtmbXpFJwmRNJIOTGBQCf7whxr87erz3glIVCEr-3XmJdkmP4PNoowPLSv4J2CUpqDEQ6WtAyZlqOA7Irh2SmhlAJbQRJH41yqUpj7EF6xFxW1PYIALzNQW_1foRj8pBfJ57IguK5K22i8fFMJkBWXbEh52m2WTpFRm-14OC2TYex4*1783226769021*5109faed2849dd7c0ac15d86dd8daa35b90718ce5f4cbe99cd86a78808122e95*I6cVF1p3XJSziqGEY_y9CbEi8yaGEODN3CgkC7sLULE~2",
+   "domain": "login.platform.vellum.ai",
+   "path": "/",
+   "secure": true,
+   "httpOnly": false
+  },
+  {
+   "name": "__cf_bm",
+   "value": "KrgXVItbRu5bkgekvbS9v_qBFmEhWXAk6b99YHrpVA8-1782017136.8384533-1.0.1.1-NF9QqnuqwFbUqWvx0KUKFe6pnzFx9I_8p2Bx5YrjjGURHX4SnlDLL0Un5WGiatGifurSPLXm3jfOdaaT9Q0u1aC9ht67rLayV8R.xs5RDjflva5hRcEsg5y0R.Yj25zm",
+   "domain": ".login.platform.vellum.ai",
+   "path": "/",
+   "secure": true,
+   "httpOnly": false
+  },
+  {
+   "name": "_cfuvid",
+   "value": "yfJXL0Ebij5iW9aDZphHlnZrH8qfOEEgMZhtclAYStU-1782017136.8384533-1.0.1.1-y39oQF7hgZRF_cCDG7IrKqcEBojz1oyacVllsiyr.io",
+   "domain": ".login.platform.vellum.ai",
+   "path": "/",
+   "secure": true,
+   "httpOnly": false
+  }
+ ],
+ "alias": "FerraNate61+6ymy@outlook.com"
+}

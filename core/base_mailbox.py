@@ -1227,12 +1227,20 @@ class LuckMailMailbox(BaseMailbox):
 
 
 class OutlookTokenMailbox(BaseMailbox):
-    """通过 Outlook refresh token 刷新访问令牌，再经 IMAP 收件。"""
+    """通过 Outlook refresh token 刷新访问令牌，再经 IMAP 收件。
+
+    部分 Outlook 个人账号 IMAP 默认禁用（认证后报 "User is authenticated but not
+    connected"），这类账号自动回退到 Graph API（https://graph.microsoft.com）收件。
+    """
 
     _TOKEN_URL = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token"
     _IMAP_SERVER = "outlook.live.com"
     _IMAP_PORT = 993
     _POLL_INTERVAL_SECONDS = 3
+    _GRAPH_BASE = "https://graph.microsoft.com/v1.0"
+    _GRAPH_MAIL_SCOPE = "https://graph.microsoft.com/Mail.Read offline_access"
+    # IMAP 不可用（账号未启用 IMAP）时回退 Graph API，避免收件永久超时。
+    _imap_unavailable: bool = False
 
     def __init__(
         self,
@@ -1446,8 +1454,13 @@ class OutlookTokenMailbox(BaseMailbox):
     def _fetch_recent_messages(self, access_token: str) -> list[dict]:
         import email
 
+        # IMAP 账号未启用时（_imap_unavailable 标记）直接走 Graph API，避免每次都试 IMAP 失败。
+        if self._imap_unavailable:
+            return self._fetch_recent_messages_via_graph()
+
         messages: list[dict] = []
         seen_keys: set[str] = set()
+        imap_failed = False
         for folder in self._mail_folders_to_scan():
             imap_conn = None
             try:
@@ -1490,10 +1503,96 @@ class OutlookTokenMailbox(BaseMailbox):
                         }
                     )
             except Exception:
+                # IMAP 认证/连接失败（如 "User is authenticated but not connected"，
+                # 账号未启用 IMAP）—— 标记并回退 Graph API。
+                imap_failed = True
                 continue
             finally:
                 self._close_imap(imap_conn)
+        if messages:
+            return messages
+        # IMAP 没拿到邮件：若 IMAP 本身连接失败，回退 Graph API（账号未启用 IMAP 的常见情况）。
+        if imap_failed:
+            try:
+                graph_messages = self._fetch_recent_messages_via_graph()
+                if graph_messages:
+                    # 标记 IMAP 不可用，后续轮询直接走 Graph API，省掉 IMAP 失败重试。
+                    self._imap_unavailable = True
+                    return graph_messages
+            except Exception:
+                pass
         return messages
+
+    def _fetch_recent_messages_via_graph(self) -> list[dict]:
+        """用 Microsoft Graph API 拉近期邮件（IMAP 不可用时的兜底收件方式）。
+
+        用 refresh_token 换 Graph Mail.Read scope 的 access_token，调
+        /me/messages 拉最近 20 封（INBOX + Junk 合并，Graph 默认返回 Inbox，
+        用 /me/mailFolders/JunkEmail/messages 单独拉 Junk）。
+        """
+        import re as _re
+        import requests
+
+        token = self._refresh_graph_access_token()
+        headers = {"Authorization": f"Bearer {token}"}
+        messages: list[dict] = []
+        for folder_path, folder_label in (
+            (f"{self._GRAPH_BASE}/me/messages", "INBOX"),
+            (f"{self._GRAPH_BASE}/me/mailFolders/JunkEmail/messages", "Junk"),
+        ):
+            try:
+                params = {
+                    "$top": "20",
+                    "$select": "id,subject,body,from,receivedDateTime",
+                    "$orderby": "receivedDateTime desc",
+                }
+                resp = requests.get(folder_path, headers=headers, params=params,
+                                    proxies=self.proxy, timeout=15)
+                if resp.status_code != 200:
+                    continue
+                for item in (resp.json() or {}).get("value", []) or []:
+                    msg_id = str(item.get("id") or "")
+                    if not msg_id:
+                        continue
+                    body = item.get("body") or {}
+                    content_type = str(body.get("contentType") or "").lower()
+                    body_html = str(body.get("content") or "") if content_type == "html" else ""
+                    body_text = _re.sub(r"<[^>]+>", " ", body_html) if body_html else str(body.get("content") or "")
+                    messages.append({
+                        "uid": f"{folder_label}:{msg_id}",
+                        "folder": folder_label,
+                        "subject": str(item.get("subject") or ""),
+                        "body_text": body_text,
+                        "body_html": body_html,
+                    })
+            except Exception:
+                continue
+        return messages
+
+    def _refresh_graph_access_token(self) -> str:
+        """用 refresh_token 换 Graph API scope（Mail.Read）的 access_token。
+
+        与 IMAP scope（outlook.office.com/IMAP.AccessAsUser.All）不同，Graph API 需要
+        https://graph.microsoft.com/Mail.Read。同一个 refresh_token 可换不同 scope 的 token。
+        """
+        import requests
+
+        response = requests.post(
+            self._TOKEN_URL,
+            data={
+                "client_id": self._client_id,
+                "grant_type": "refresh_token",
+                "refresh_token": self._refresh_token,
+                "scope": self._GRAPH_MAIL_SCOPE,
+            },
+            proxies=self.proxy,
+            timeout=15,
+        )
+        response.raise_for_status()
+        access_token = str((response.json() or {}).get("access_token") or "").strip()
+        if not access_token:
+            raise RuntimeError("Outlook Graph API token 刷新失败：未返回 access_token")
+        return access_token
 
     @staticmethod
     def _mail_folders_to_scan() -> tuple[str, ...]:

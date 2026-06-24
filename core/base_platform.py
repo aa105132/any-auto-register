@@ -1,13 +1,44 @@
 """平台插件基类"""
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from enum import Enum
 import random
 import string
 import time
 
 from core.registration import BrowserRegistrationFlow, ProtocolMailboxFlow, ProtocolOAuthFlow, RegistrationContext, RegistrationResult
+
+
+def make_google_oauth_stop_when(token: "CancelToken | None", existing: Callable[[Any], bool] | None = None) -> Callable[[Any], bool] | None:
+    """构造 drive_google_oauth 的 stop_when 回调：取消令牌置位时返回 True，
+    让 OAuth driver 主循环提前退出，随后调用方检测 token 抛 TaskCancelledError。
+
+    若平台已有自己的 stop_when（如"检测到登录后页面即停止 OAuth driver"），
+    二者取或：取消或平台条件任一满足即提前返回。
+
+    token 为 None 且 existing 为 None 时返回 None，保持 drive_google_oauth 原有行为。
+    """
+    token_check = None
+    if token is not None:
+        def token_check(_browser) -> bool:
+            return token.is_set()
+    if token_check is None and existing is None:
+        return None
+    if token_check is None:
+        return existing
+    if existing is None:
+        return token_check
+
+    def _combined(browser) -> bool:
+        try:
+            if existing(browser):
+                return True
+        except Exception:
+            pass
+        return token.is_set()
+
+    return _combined
 
 
 class AccountStatus(str, Enum):

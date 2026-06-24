@@ -37,6 +37,7 @@ class GooglePoolAccount:
     notes: str = ""
     status: str = "valid"
     reserved_platforms: list[str] = field(default_factory=list)
+    totp_secret: str = ""
 
 
 class GoogleAccountPool:
@@ -76,6 +77,16 @@ class GoogleAccountPool:
         return str(platform or "").strip().lower()
 
     @staticmethod
+    def _normalize_platforms(platforms) -> list[str]:
+        """归一化平台列表：传字符串时自动包成单元素列表，避免 set("vellum")
+        把平台名拆成单字符污染 reserved_platforms。"""
+        if platforms is None:
+            return []
+        if isinstance(platforms, str):
+            return [platforms]
+        return list(platforms or [])
+
+    @staticmethod
     def _reserved_platforms(item: dict) -> list[str]:
         reserved = item.get("reserved_platforms", [])
         return reserved if isinstance(reserved, list) else []
@@ -88,7 +99,7 @@ class GoogleAccountPool:
         """原子占用一个可用账号，避免并发任务拿到同一 Google 账号。"""
         with self._lock:
             data = self._read()
-            exclude = {self._platform_key(platform) for platform in (exclude_platforms or []) if self._platform_key(platform)}
+            exclude = {self._platform_key(platform) for platform in self._normalize_platforms(exclude_platforms) if self._platform_key(platform)}
             accounts = data.get("accounts", [])
             for item in accounts:
                 if str(item.get("status") or "valid").strip().lower() == "invalid":
@@ -140,7 +151,7 @@ class GoogleAccountPool:
             return None
         with self._lock:
             data = self._read()
-            exclude = {self._platform_key(platform) for platform in (exclude_platforms or []) if self._platform_key(platform)}
+            exclude = {self._platform_key(platform) for platform in self._normalize_platforms(exclude_platforms) if self._platform_key(platform)}
             for item in data.get("accounts", []):
                 if (item.get("email") or "").strip().lower() != email_lower:
                     continue

@@ -33,6 +33,7 @@ class GoogleOAuthResult:
 
     email_submitted: bool = False
     password_submitted: bool = False
+    totp_submitted: bool = False
     clicked_prompt: bool = False
     blocked_on_password: bool = False
     last_url: str = ""
@@ -633,14 +634,16 @@ def drive_google_oauth(
     *,
     email: str = "",
     password: str = "",
+    totp_secret: str = "",
     timeout: int = 180,
     log_fn: Callable[[str], None] = print,
     stop_when: Callable[[OAuthBrowser], bool] | None = None,
 ) -> GoogleOAuthResult:
-    """统一处理 Google OAuth 登录页、账号选择、密码页和授权提示。"""
+    """统一处理 Google OAuth 登录页、账号选择、密码页、2FA(TOTP) 和授权提示。"""
     result = GoogleOAuthResult()
     email_attempts = 0
     password_attempts = 0
+    totp_attempts = 0
     deadline = time.time() + max(5, int(timeout or 180))
     last_status_log = 0.0
     while time.time() < deadline:
@@ -736,6 +739,43 @@ def drive_google_oauth(
                     continue
             except Exception:
                 pass
+
+            # 1b) 2FA / TOTP challenge after password submission.
+            # Google 2FA 页 URL 含 challenge/totp，body 含 "2-step verification"。
+            # 用 core.oauth_2fa 的策略化驱动处理 TOTP 输入框填写 + 提交。
+            if totp_secret and result.password_submitted and totp_attempts < 3:
+                try:
+                    from core.oauth_2fa import TwoFactorStrategy, is_2fa_challenge, drive_oauth_2fa_step
+                    google_2fa_strategy = TwoFactorStrategy(
+                        challenge_url_pattern="challenge/",
+                        challenge_url_exclude=["challenge/pwd"],
+                        challenge_body_hints=["2-step verification", "两步验证"],
+                        totp_input_selectors=['input[name="totpPin"]', 'input[id="totpPin"]'],
+                        exclude_input_selectors=['#ootp-pin', 'input[name="Pin"]'],
+                        try_another_way_labels=["Try another way", "尝试其他方式"],
+                        authenticator_option_labels=["Google Authenticator", "身份验证器"],
+                        submit_labels=["Next", "下一步"],
+                        selection_url_pattern="challenge/selection",
+                        log_prefix="[GoogleOAuth-2FA]",
+                    )
+                    if is_2fa_challenge(page, google_2fa_strategy):
+                        log_fn("[GoogleOAuth] 检测到 2FA 验证页，开始处理 TOTP")
+                        handled, fatal, totp_attempts = drive_oauth_2fa_step(
+                            page, google_2fa_strategy, totp_secret=totp_secret,
+                            totp_attempts=totp_attempts, max_attempts=3, log_fn=log_fn,
+                        )
+                        if handled:
+                            result.totp_submitted = True
+                            log_fn("[GoogleOAuth] TOTP 已提交")
+                            time.sleep(5)
+                            progressed = True
+                            continue
+                        if fatal:
+                            log_fn("[GoogleOAuth] 2FA 处理失败（TOTP secret 无效或尝试次数耗尽）")
+                            time.sleep(1)
+                            continue
+                except Exception as exc_2fa:
+                    log_fn(f"[GoogleOAuth] 2FA 处理异常: {exc_2fa!r}")
 
             # 2) Credential pages are not captcha pages. Some Google identifier
             # pages contain hidden fields such as #ca; do not stop automation while

@@ -85,3 +85,16 @@ def test_delete_invalid_removes_only_invalid_accounts(tmp_path: Path):
     emails = [item["email"] for item in data["accounts"]]
     assert emails == ["user0@example.com", "user2@example.com"]
     assert all(item["status"] == "valid" for item in data["accounts"])
+
+
+def test_acquire_with_string_platform_does_not_split_chars(tmp_path: Path):
+    """传字符串平台名不应被 set() 拆成单字符污染 reserved_platforms。"""
+    pool_path = tmp_path.joinpath("google_accounts_pool.json")
+    _write_pool(pool_path, 1)
+    pool = GoogleAccountPool(str(pool_path))
+
+    account = pool.acquire(exclude_platforms="vellum")
+    assert account is not None
+
+    data = json.loads(pool_path.read_text(encoding="utf-8"))
+    assert data["accounts"][0]["reserved_platforms"] == ["vellum"]

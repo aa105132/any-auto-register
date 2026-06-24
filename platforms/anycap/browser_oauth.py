@@ -233,16 +233,56 @@ def register_with_browser_oauth(
     chrome_cdp_url: str = "",
     google_password: str = "",
     api_key_name: str = "auto-register",
+    use_camoufox: bool = True,
+    cancel_token=None,
 ) -> dict[str, Any]:
     if (oauth_provider or "google").lower() != "google":
         raise RuntimeError("AnyCap 当前只支持 Google OAuth/CDP 注册")
 
-    with OAuthBrowser(proxy=proxy, headless=headless, chrome_user_data_dir=chrome_user_data_dir, chrome_cdp_url=chrome_cdp_url, log_fn=log_fn) as browser:
+    # AnyCap 的 Auth0 Google OAuth client (auth.converge.ai) 跟 Vellum 一样对浏览器做
+    # 严格安全检测：Playwright Chromium 提交邮箱后会跳 accounts.google.com/v3/signin/rejected
+    # （"此浏览器或应用可能不安全"）。默认用 Camoufox（反检测 Firefox）绕过该检测。
+    with OAuthBrowser(
+        proxy=proxy,
+        headless=headless,
+        chrome_user_data_dir=chrome_user_data_dir,
+        chrome_cdp_url=chrome_cdp_url,
+        use_camoufox=use_camoufox,
+        log_fn=log_fn,
+    ) as browser:
+        browser.set_cancel_token(cancel_token)
         page = browser.new_page()
         page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=60000)
         time.sleep(2)
-        try_click_provider_on_page(page, "google")
-        drive_google_oauth(
+        # Auth0 Universal Login 页面渲染较慢，Google 按钮可能 2s 后仍未就绪；
+        # 等按钮可见再点击，并验证跳转到 accounts.google.com，否则重点。
+        clicked_google = False
+        for attempt in range(3):
+            try:
+                page.wait_for_selector("button, [role='button'], a", state="attached", timeout=10000)
+            except Exception:
+                pass
+            clicked = try_click_provider_on_page(page, "google")
+            log_fn(f"[AnyCap] 点击 Google 按钮 attempt={attempt} clicked={clicked} url={(page.url or '')[:80]}")
+            if not clicked:
+                time.sleep(2)
+                continue
+            # 等待跳转到 Google / Auth0 callback，确认点击生效
+            for _ in range(10):
+                time.sleep(1)
+                cur = page.url or ""
+                if "accounts.google.com" in cur or "auth.converge.ai/login/callback" in cur:
+                    break
+            cur = page.url or ""
+            if "accounts.google.com" in cur:
+                clicked_google = True
+                break
+            log_fn(f"[AnyCap] 点击 Google 后未跳转 accounts.google.com，重点: url={cur[:80]}")
+            time.sleep(2)
+        if not clicked_google:
+            pages_urls = [(p.url or "")[:80] for p in browser.pages() if not p.is_closed()]
+            raise RuntimeError(f"AnyCap 点击 Continue with Google 未跳转到 Google 登录页: pages={pages_urls}")
+        oauth_result = drive_google_oauth(
             browser,
             email=email_hint,
             password=google_password,
@@ -250,6 +290,25 @@ def register_with_browser_oauth(
             log_fn=log_fn,
             stop_when=lambda b: any("anycap.ai" in (p.url or "") and "auth" not in (p.url or "") for p in b.pages() if not p.is_closed()),
         )
+        log_fn(
+            f"[AnyCap] drive_google_oauth 结果: email_submitted={oauth_result.email_submitted} "
+            f"password_submitted={oauth_result.password_submitted} blocked_on_password={oauth_result.blocked_on_password} "
+            f"last_url={(oauth_result.last_url or '')[:100]}"
+        )
+        if oauth_result.blocked_on_password and not any("anycap.ai" in (p.url or "") for p in browser.pages() if not p.is_closed()):
+            # Google 登录被拒绝/验证码拦截，打印现场便于定位
+            for p in browser.pages():
+                if p.is_closed():
+                    continue
+                try:
+                    body = str(p.evaluate("() => document.body ? document.body.innerText : ''") or "")[:300]
+                except Exception as exc:
+                    body = f"<eval failed: {exc!r}>"
+                log_fn(f"[AnyCap] blocked 现场: url={(p.url or '')[:100]} body={body!r}")
+            raise RuntimeError(
+                f"AnyCap Google OAuth 登录被 Google 拒绝/拦截: last_url={(oauth_result.last_url or '')[:100]} "
+                f"email={email_hint} (workspace 域策略或账号风控，详见 blocked 现场)"
+            )
         if chrome_cdp_url or chrome_user_data_dir:
             browser.auto_select_google_account(timeout=8)
         _click_login_prompts(browser, timeout=min(timeout, 90), log_fn=log_fn)

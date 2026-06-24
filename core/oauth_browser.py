@@ -339,6 +339,8 @@ class OAuthBrowser:
         chrome_cdp_url: str = "",
         reuse_existing_cdp: bool = False,
         log_fn: Callable[[str], None] = print,
+        use_camoufox: bool = False,
+        camoufox_user_data_dir: str = "",
     ):
         self.proxy = proxy
         self.headless = headless
@@ -348,6 +350,12 @@ class OAuthBrowser:
         # context/profile，导致账号池账号串号、标签页互相抢焦点。只有显式传入
         # chrome_cdp_url，或设置 reuse_existing_cdp=True，才连接已有浏览器。
         self.reuse_existing_cdp = bool(reuse_existing_cdp)
+        # Camoufox（基于 Firefox 的反检测浏览器）：用于 Google 对 OAuth app 做严格
+        # 浏览器安全检测的场景（如 Vellum），Playwright Chromium 会被 signin/rejected。
+        self.use_camoufox = bool(use_camoufox)
+        # Camoufox 持久化 profile 目录：设置后用 persistent_context=True 启动，
+        # 登录态（cookie/session）落盘，后续脚本复用同一 profile 免重登。
+        self.camoufox_user_data_dir = camoufox_user_data_dir
         self.log = log_fn
         self._pw = None
         self.browser = None
@@ -357,10 +365,52 @@ class OAuthBrowser:
         self._owns_cdp_browser = False
         self._external_chromium_process = None
         self._external_chromium_user_data_dir = ""
+        self._camoufox_runner = None  # Camoufox 实例（反检测 Firefox 路径）
+        self._camoufox_persistent = False  # Camoufox persistent_context 路径
+        self._cancel_token = None  # 协作式取消令牌（由平台层注入）
+
+    def set_cancel_token(self, token) -> None:
+        self._cancel_token = token
+
+    def _poll_cancel(self) -> None:
+        from core.cancel_token import check_cancel
+        check_cancel(self._cancel_token)
 
     def __enter__(self):
-        self._pw = sync_playwright().start()
+        # Camoufox 自带 Playwright sync runtime，不能与 OAuthBrowser 的 sync_playwright() 共存
+        # （会触发 "Sync API inside asyncio loop"）。Camoufox 路径独立启动，不走 self._pw。
+        self._pw = None if self.use_camoufox else sync_playwright().start()
         proxy_cfg = _build_proxy_config(self.proxy)
+
+        if self.use_camoufox:
+            # Camoufox（反检测 Firefox）：用于 Google 严格浏览器安全检测的 OAuth app。
+            from camoufox.sync_api import Camoufox
+            launch_options: dict = {"headless": self.headless}
+            if proxy_cfg:
+                launch_options["proxy"] = proxy_cfg
+            # 持久化 profile：persistent_context=True 时 Camoufox __enter__ 返回
+            # BrowserContext（非 Browser），登录态落盘到 camoufox_user_data_dir。
+            # user_data_dir 必须作为顶层 kwarg 传给 Camoufox（落入 launch_options() 的
+            # **kwargs，再被 spread 进 launch_persistent_context 的参数）。
+            if self.camoufox_user_data_dir:
+                Path(self.camoufox_user_data_dir).mkdir(parents=True, exist_ok=True)
+                launch_options["persistent_context"] = True
+                launch_options["user_data_dir"] = self.camoufox_user_data_dir
+                self._camoufox_persistent = True
+                self.log(f"[OAuthBrowser] 启动 Camoufox 持久化 profile: {self.camoufox_user_data_dir}")
+                self._camoufox_runner = Camoufox(**launch_options)
+                self.context = self._camoufox_runner.__enter__()  # 返回 BrowserContext
+                self.browser = None  # 持久化模式无独立 Browser 对象
+                pages = self.context.pages
+                self.page = pages[0] if pages else self.context.new_page()
+                return self
+            # 非持久化：Camoufox __enter__ 返回 Browser，这里创建一个 context。
+            self.log("[OAuthBrowser] 启动 Camoufox（反检测 Firefox）")
+            self._camoufox_runner = Camoufox(**launch_options)
+            self.browser = self._camoufox_runner.__enter__()
+            self.context = self.browser.new_context()
+            self.page = self.context.new_page()
+            return self
 
         if self.chrome_cdp_url:
             # Connect to a running Chrome instance via CDP
@@ -439,6 +489,17 @@ class OAuthBrowser:
 
     def __exit__(self, exc_type, exc, tb):
         try:
+            if self.use_camoufox and self._camoufox_runner is not None:
+                # Camoufox 路径独立清理
+                try:
+                    if self.context:
+                        self.context.close()
+                finally:
+                    if self.browser:
+                        self.browser.close()
+                    self._camoufox_runner.__exit__(exc_type, exc, tb)
+                    self._camoufox_runner = None
+                return
             if self._persistent:
                 if self.context:
                     self.context.close()

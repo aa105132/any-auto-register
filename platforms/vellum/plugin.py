@@ -11,7 +11,8 @@ from __future__ import annotations
 
 from core.base_mailbox import BaseMailbox
 from core.base_platform import Account, AccountStatus, BasePlatform, RegisterConfig
-from core.registration import BrowserRegistrationAdapter, OtpSpec, RegistrationResult
+from core.registration import BrowserRegistrationAdapter, OtpSpec, ProtocolOAuthAdapter, RegistrationCapability, RegistrationResult
+from core.registration.helpers import resolve_timeout
 from core.registry import register
 
 SITE_URL = "https://www.vellum.ai"
@@ -40,8 +41,8 @@ class VellumPlatform(BasePlatform):
     display_name = "Vellum Assistant"
     version = "1.0.0"
     supported_executors = ["headless", "headed"]
-    supported_identity_modes = ["mailbox"]
-    supported_oauth_providers: list[str] = []
+    supported_identity_modes = ["mailbox", "oauth_browser"]
+    supported_oauth_providers = ["google"]
     default_mail_provider = "cfworker"
 
     def __init__(self, config: RegisterConfig = None, mailbox: BaseMailbox = None):
@@ -53,6 +54,50 @@ class VellumPlatform(BasePlatform):
             config = dataclasses.replace(config, executor_type="headless")
         super().__init__(config)
         self.mailbox = mailbox
+
+    def _resolve_google_password(self, ctx) -> str:
+        mailbox_account = getattr(ctx.identity, "mailbox_account", None)
+        mailbox_extra = dict(getattr(mailbox_account, "extra", {}) or {}) if mailbox_account else {}
+        provider_account = mailbox_extra.get("provider_account") if isinstance(mailbox_extra, dict) else None
+        credentials = provider_account.get("credentials") if isinstance(provider_account, dict) else None
+        if isinstance(credentials, dict) and credentials.get("password"):
+            return str(credentials.get("password") or "").strip()
+        return str(ctx.password or ctx.extra.get("google_password") or "").strip()
+
+    def _resolve_totp_secret(self, ctx) -> str:
+        pool_totp = ""
+        mailbox_account = getattr(ctx.identity, "mailbox_account", None)
+        mailbox_extra = dict(getattr(mailbox_account, "extra", {}) or {}) if mailbox_account else {}
+        provider_account = mailbox_extra.get("provider_account") if isinstance(mailbox_extra, dict) else None
+        metadata = provider_account.get("metadata") if isinstance(provider_account, dict) else None
+        if isinstance(metadata, dict) and metadata.get("totp_secret"):
+            pool_totp = metadata.get("totp_secret")
+        if pool_totp:
+            return str(pool_totp).strip()
+        return str(ctx.extra.get("totp_secret") or ctx.extra.get("google_totp_secret") or "").strip()
+
+    def _run_oauth(self, ctx) -> dict:
+        from platforms.vellum.browser_oauth import register_with_browser_oauth
+
+        extra = dict(ctx.extra or {})
+        return register_with_browser_oauth(
+            proxy=ctx.proxy,
+            oauth_provider=getattr(ctx.identity, "oauth_provider", "google") or "google",
+            email_hint=getattr(ctx.identity, "email", "") or extra.get("oauth_email_hint", ""),
+            google_password=self._resolve_google_password(ctx),
+            totp_secret=self._resolve_totp_secret(ctx),
+            invite_code=str(extra.get("vellum_invite_code") or DEFAULT_INVITE_CODE).strip() or DEFAULT_INVITE_CODE,
+            timeout=resolve_timeout(extra, ("vellum_oauth_timeout", "browser_oauth_timeout", "manual_oauth_timeout"), 300),
+            log_fn=ctx.log,
+            headless=(ctx.executor_type == "headless"),
+            chrome_user_data_dir=getattr(ctx.identity, "chrome_user_data_dir", "") or str(extra.get("vellum_chrome_user_data_dir") or ""),
+            chrome_cdp_url=getattr(ctx.identity, "chrome_cdp_url", "") or str(extra.get("vellum_cdp_url") or ""),
+            use_camoufox=str(extra.get("vellum_oauth_use_camoufox", "true")).strip().lower() in {"1", "true", "yes", "on"},
+            cancel_token=getattr(ctx, "cancel_token", None),
+        )
+
+    def build_protocol_oauth_adapter(self):
+        return ProtocolOAuthAdapter(oauth_runner=self._run_oauth, result_mapper=lambda ctx, result: self._map_result(ctx, result))
 
     def _map_result(self, ctx, result: dict) -> RegistrationResult:
         result = dict(result or {})
@@ -88,6 +133,8 @@ class VellumPlatform(BasePlatform):
     def build_browser_registration_adapter(self):
         return BrowserRegistrationAdapter(
             result_mapper=self._map_result,
+            oauth_runner=self._run_oauth,
+            capability=RegistrationCapability(oauth_allowed_executor_types=("headed", "headless", "cdp_protocol")),
             browser_worker_builder=lambda ctx, artifacts: __import__(
                 "platforms.vellum.browser_register",
                 fromlist=["VellumBrowserRegister"],

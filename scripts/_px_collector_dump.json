@@ -1,0 +1,51 @@
+[
+  {
+    "url": "https://iframe.hsprotect.net/index.html?app_id=PXzC5j78di&session_id=569efc56-2c7e-825f-9624-49d69da3ff10",
+    "method": "GET",
+    "body_len": 0,
+    "body_preview": "",
+    "resource_type": "document"
+  },
+  {
+    "url": "https://client.hsprotect.net/PXzC5j78di/main.min.js",
+    "method": "GET",
+    "body_len": 0,
+    "body_preview": "",
+    "resource_type": "script"
+  },
+  {
+    "url": "https://stk.hsprotect.net/ns?c=a9dac230-6daa-11f1-a8c5-ddde94126626",
+    "method": "GET",
+    "body_len": 0,
+    "body_preview": "",
+    "resource_type": "xhr"
+  },
+  {
+    "url": "https://collector-pxzc5j78di.hsprotect.net/api/v2/msft",
+    "method": "POST",
+    "body_len": 746,
+    "body_preview": "payload=aUkQRhAIEHVxY1t+XgNweFpZDxAeEFYQCEkQYV5CRXdzRQdXYVEPEAgQWkZGQkEIHR1bVEBTX1ccWkFCQF1GV1FGHFxXRh1bXFZXShxaRl9eDVNCQm1bVg9iakhxB1gFClZbFEFXQUFbXVxtW1YPBwQLV1RRBwQfAFEFVx8KAAdUHwsEAAYfBgtWBAtWUwFUVAMCEB4QZGN3RHFKcF97WAYPEAgDHhBWZXRieUhzc2BKdw8QCBBlW1wBABAeEHGpnXlxjA0FeU1x/DxAIAh4QYAFRC2Jjd2p8VQoPEAgFB^AYeEHFIRkpRZS}wdRV3dBDxAIAQQCADh4Qe2cCUGAAUUB6XHMPEAgDBQoAAgUDBwMNK8KBAoGHhBjYQIFaEVgeWDJeZwN8QCAMFCgACBQMHAwaoECw>ceEHRndERhA3D9VU`wEKDxAIEFMLVlNRAAKECH}wRWU1MfAwNUAx9TClEHH1ZWVlcLBgMABAQABBAe",
+    "resource_type": "xhr"
+  },
+  {
+    "url": "https://collector-pxzc5j78di.hsprotect.net/api/v2/msft",
+    "method": "POST",
+    "body_len": 9730,
+    "body_preview": "payload=aUkQRhAIEGsDfGhlYWdIamVBDxAeEFYQCEkQUWADfnRIVgpgYWMPEAgDBQoAAgUDBwACAwUFHhBTYGRmektKA2VbWQ8QCEZAR1ceEGFeQkV3cwoEV1t3DxAIEAcEBAtRAgtUEB4QZFtoQX5wcHVrSlEPEAgBAAoBBgQDHhBQWAZnfHFaV3pzfw8QCAYACwYLBAUACwQeEHtxSlN4X2hwZHBRDxAIBAYHCgYGBx4QfkoKZHRlXkt6cVEPEAgQf11cEnhHXBIAABIAAgAEEgIBCAcDCAcLEnV/ZhkCCgICEhrkuJ/lm4/moLXlh7Tml4Tpl4YbEB4QUAMLZGRhWR1lX3cPEAhUU15BVx4QZQJBWmNgAl14elEPEAhUU15BVx4QeHZwV31feFZnVV0PEAhUU15BVx4QYHBwGWVVdABRdQIPEAhGQEdXHhBRVXt7YXZWXHZqXQ8QCAMCHhBnZgJAVkpWV3tnAg8QCEZAR1ceEHNI",
+    "resource_type": "xhr"
+  },
+  {
+    "url": "https://collector-pxzc5j78di.hsprotect.net/api/v2/msft",
+    "method": "POST",
+    "body_len": 13378,
+    "body_preview": "payload=aUkQRhAIEHlcQmNRdQpoZGd7DxAeEFYQCEkQZwJ/QmFga1V+el0PEAhJEFdcEAgQAxwDHGJ/Y1AHY3VwXQNEB0dhfncCAAJeX0F8cFhxdlhRX11rBWBFa0QEYl11VVYLWmADenFqQGFmXXkCZHxXQlF8XwVKQkZdV0VBB3dleFthVXlRbXZQemJmcGh1V39fR0dmQGVYeFBHU0B9XXVdQx9DWQYHeQZAV1sLXFZfWlV5A1dUWQsBe39We0JBWQBTZVdoe3l5bVsfS2MAZlZQe0F5VUBTWW13BGttc1lVaxxRAV9xd1d4e3cCQGF/BQR7HGVzAmFTXnN8fkZdYwNaAmN9BgEKUHtiRWICe35XYl18X3NDWH9BQ1Z1eQZzbQJYYwpYcQRwSgRRZH1zdmtZYUdecGBeSgZXa1BRe2tiZ2hmVUUCC0FWB1dQWWd1YlBBeF1eAR90ZldnWgNYBnEFS2dLBXpKZXlbUEZzSlF4XHdj",
+    "resource_type": "xhr"
+  },
+  {
+    "url": "https://collector-pxzc5j78di.hsprotect.net/api/v2/msft",
+    "method": "POST",
+    "body_len": 7958,
+    "body_preview": "payload=aUkQRhAIEFNgZGZ6SwsDZVtdDxAeEFYQCEkQZl4HAnRzQRlUW2sPEAgQBFNUC1EBBAcLAFACC1dUBAYBAgEAUFYAU1AHUAdXVFMQHhB7XHhrV3VjZ2d3VQ8QCBAAAVNUCwcDBwcEUVFXVwFQBwUCVAsLU1MCAgUEAlcHVBAeEFF6RXlWWGdQdllrDxAIEGVXUHlbRhAeEGJhWXprAUZ4dnRrDxAIEGVXUHlbRhJlV1B1fhAeEGEBQUp/YwZXYkV3DxAIEGVXUHV+EgMcAhIafUJXXHV+EndhEgAcAhJxWkBdX1tHXxsQHhB0cXNHeV54c3twBg8QCGkQc3x1fndtW1xBRlNcUVdWbVNAQFNLQRAeEHdqZm1QXldcVm1fW1xfU0oQHhB3amZtUV5bQm1RXVxGQF1eEB4Qd2pmbVFdXl1AbVBHVFRXQG1aU15UbVReXVNGEB4Qd2pmbVZXQkZabVFeU19CEB4Qd2pmbVZbQVhd",
+    "resource_type": "xhr"
+  }
+]

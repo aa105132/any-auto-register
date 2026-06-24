@@ -1,0 +1,22 @@
+{
+  "success": null,
+  "attempts_count": 1,
+  "all_results": [
+    {
+      "ok": false,
+      "error": "open_signup_failed",
+      "elapsed": 53.8,
+      "slot": 27,
+      "ip": "",
+      "node": "resin-ol27",
+      "worker": 27,
+      "logs_tail": [
+        "[outlook] 查代理 IP 失败，用 geoip=False: ReadTimeout(ReadTimeoutError(\"HTTPConnectionPool(host='20.193.157.62', port=2260",
+        "[outlook] 启动 Camoufox（反检测 Firefox）...",
+        "[outlook] 准备注册: bc2svjpzo5ue@outlook.com",
+        "[outlook] 打开注册页失败: Error('Page.goto: NS_ERROR_NET_TIMEOUT\\nCall log:\\n  - navigating to \"https://outlook.live.com/mail/0/?prompt=create_acc",
+        "[outlook] 注册结束 last_error=open_signup_failed 耗时=53.8s"
+      ]
+    }
+  ]
+}

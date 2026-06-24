@@ -1,0 +1,15 @@
+[
+  {
+    "url": "https://login.platform.vellum.ai/sign-up?client_id=client_01KHCWWJMQ27T1WEPTWV4KV1Z0&redirect_uri=https%3A%2F%2Fwww.vellum.ai%2Faccounts%2Fworkos%2Flogin%2Fcallback%2F&state=poFFjKDF0mnu30Gp&authorization_session_id=01KVJPQKH8TPD82DFQVPD7Y32W",
+    "headers": {
+      "accept": "text/x-component",
+      "referer": "https://login.platform.vellum.ai/sign-up?client_id=client_01KHCWWJMQ27T1WEPTWV4KV1Z0&redirect_uri=https%3A%2F%2Fwww.vellum.ai%2Faccounts%2Fworkos%2Flogin%2Fcallback%2F&state=poFFjKDF0mnu30Gp&authorization_session_id=01KVJPQKH8TPD82DFQVPD7Y32W",
+      "next-action": "a67eb6646e43eddcbd0d038cbee664aac59f5a53",
+      "content-type": "text/plain;charset=UTF-8",
+      "origin": "https://login.platform.vellum.ai"
+    },
+    "post_data": "[\"540b0898cd9f51ec1964495f00487ead27dfa739913a4075987eb3a411a10f36\"]",
+    "ts": 1781965511.6229064,
+    "alias": "BellafioreRevoir78+kk96@outlook.com"
+  }
+]

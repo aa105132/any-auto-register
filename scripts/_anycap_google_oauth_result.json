@@ -1,0 +1,6 @@
+{
+  "ok": false,
+  "email": "tranngochientbql9a98tbvl@cttnoot.us",
+  "error": "Google OAuth 账号已被删除，已标记账号池失效: tranngochientbql9a98tbvl@cttnoot.us :: Loading\nSign in with Google\nAccount deleted\ntranngochientbql9a98tbvl@cttnoot.us\nThis account was recently deleted and may be recoverable. Click Next to attempt to restore this account.\nNext\nUse another account\nEnglish (United States)\nHelp\nPrivacy\nTerms\nAccount deleted",
+  "traceback": "Traceback (most recent call last):\n  File \"D:\\Desktop\\cat\\any-auto-register\\scripts\\test_anycap_google_oauth.py\", line 117, in main\n    result = register_with_browser_oauth(\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"D:\\Desktop\\cat\\any-auto-register\\platforms\\anycap\\browser_oauth.py\", line 285, in register_with_browser_oauth\n    oauth_result = drive_google_oauth(\n                   ^^^^^^^^^^^^^^^^^^^\n  File \"D:\\Desktop\\cat\\any-auto-register\\core\\google_oauth.py\", line 673, in drive_google_oauth\n    raise RuntimeError(\nRuntimeError: Google OAuth 账号已被删除，已标记账号池失效: tranngochientbql9a98tbvl@cttnoot.us :: Loading\nSign in with Google\nAccount deleted\ntranngochientbql9a98tbvl@cttnoot.us\nThis account was recently deleted and may be recoverable. Click Next to attempt to restore this account.\nNext\nUse another account\nEnglish (United States)\nHelp\nPrivacy\nTerms\nAccount deleted\n"
+}

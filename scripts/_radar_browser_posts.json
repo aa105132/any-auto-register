@@ -1,0 +1,14 @@
+[
+  {
+    "url": "https://login.platform.vellum.ai/radar-challenge?state=8yoxDmNpo5c6Pqv9&redirect_uri=https%3A%2F%2Fwww.vellum.ai%2Faccounts%2Fworkos%2Flogin%2Fcallback%2F&authorization_session_id=01KVK1V8BM6CV8BTGBRBHJ0253",
+    "headers": {
+      "accept": "text/x-component",
+      "referer": "https://login.platform.vellum.ai/radar-challenge?state=8yoxDmNpo5c6Pqv9&redirect_uri=https%3A%2F%2Fwww.vellum.ai%2Faccounts%2Fworkos%2Flogin%2Fcallback%2F&authorization_session_id=01KVK1V8BM6CV8BTGBRBHJ0253",
+      "next-action": "a67eb6646e43eddcbd0d038cbee664aac59f5a53",
+      "content-type": "text/plain;charset=UTF-8",
+      "origin": "https://login.platform.vellum.ai"
+    },
+    "post_data": "[\"db4cefb703a8ed239e9063c9dc2c4d2c0df0f9a2acd39a17ac35e8acd160d554\"]",
+    "ts": 1781977258.633719
+  }
+]

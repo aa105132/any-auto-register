@@ -51,6 +51,10 @@ class AnyCapPlatform(BasePlatform):
             chrome_user_data_dir=getattr(ctx.identity, "chrome_user_data_dir", "") or str(extra.get("anycap_chrome_user_data_dir") or ""),
             chrome_cdp_url=getattr(ctx.identity, "chrome_cdp_url", "") or str(extra.get("anycap_cdp_url") or ""),
             api_key_name=str(extra.get("anycap_api_key_name") or extra.get("api_key_name") or "auto-register"),
+            # AnyCap Auth0 Google OAuth client 对 Playwright Chromium 触发 signin/rejected，
+            # 默认走 Camoufox（反检测 Firefox）；可经 extra 显式关闭。
+            use_camoufox=str(extra.get("anycap_oauth_use_camoufox", "true")).strip().lower() in {"1", "true", "yes", "on"},
+            cancel_token=getattr(ctx, "cancel_token", None),
         )
 
     def _map_result(self, result: dict) -> RegistrationResult:

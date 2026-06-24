@@ -1,0 +1,38 @@
+[
+  {
+    "url": "https://login.platform.vellum.ai/sign-up?client_id=client_01KHCWWJMQ27T1WEPTWV4KV1Z0&redirect_uri=https%3A%2F%2Fwww.vellum.ai%2Faccounts%2Fworkos%2Flogin%2Fcallback%2F&state=zPpGhOz1kP49LVCC&authorization_session_id=01KVJHR360QTPTM4ZX73ZPN193",
+    "method": "POST",
+    "headers": {
+      "accept": "text/x-component",
+      "referer": "https://login.platform.vellum.ai/sign-up?client_id=client_01KHCWWJMQ27T1WEPTWV4KV1Z0&redirect_uri=https%3A%2F%2Fwww.vellum.ai%2Faccounts%2Fworkos%2Flogin%2Fcallback%2F&state=zPpGhOz1kP49LVCC&authorization_session_id=01KVJHR360QTPTM4ZX73ZPN193",
+      "next-action": "a67eb6646e43eddcbd0d038cbee664aac59f5a53",
+      "content-type": "text/plain;charset=UTF-8",
+      "origin": "https://login.platform.vellum.ai"
+    },
+    "post_data": "[\"60c3ed6468667e05d2beb369c1a8e2d3b5ebc1a44c6869a161c54b71bc94c7dc\"]"
+  },
+  {
+    "url": "https://login.platform.vellum.ai/sign-up?client_id=client_01KHCWWJMQ27T1WEPTWV4KV1Z0&redirect_uri=https%3A%2F%2Fwww.vellum.ai%2Faccounts%2Fworkos%2Flogin%2Fcallback%2F&state=zPpGhOz1kP49LVCC&authorization_session_id=01KVJHR360QTPTM4ZX73ZPN193",
+    "method": "POST",
+    "headers": {
+      "accept": "text/x-component",
+      "referer": "https://login.platform.vellum.ai/sign-up?client_id=client_01KHCWWJMQ27T1WEPTWV4KV1Z0&redirect_uri=https%3A%2F%2Fwww.vellum.ai%2Faccounts%2Fworkos%2Flogin%2Fcallback%2F&state=zPpGhOz1kP49LVCC&authorization_session_id=01KVJHR360QTPTM4ZX73ZPN193",
+      "next-action": "b263a6ee1ac854642026b529d988f13fc058958b",
+      "content-type": "multipart/form-data; boundary=----geckoformboundary1fda32f4563ef1eca1aa5705a7598253",
+      "origin": "https://login.platform.vellum.ai"
+    },
+    "post_data": "------geckoformboundary1fda32f4563ef1eca1aa5705a7598253\r\nContent-Disposition: form-data; name=\"1_signals\"\r\n\r\neyJjcmVhdGVkQXRNcyI6MTc4MTk2MDI4NDk2MywidGltZXpvbmUiOiJBc2lhL0hvbmdfS29uZyIsImxhbmd1YWdlIjoiemgtSEsiLCJoYXJkd2FyZUNvbmN1cnJlbmN5IjoyLCJ3ZWJkcml2ZXIiOmZhbHNlLCJ1c2VyQWdlbnQiOiJNb3ppbGxhLzUuMCAoTWFjaW50b3NoOyBJbnRlbCBNYWMgT1MgWCAxMC4xNTsgcnY6MTM1LjApIEdlY2tvLzIwMTAwMTAxIEZpcmVmb3gvMTM1LjAiLCJhcHBWZXJzaW9uIjoiNS4wIChNYWNpbnRvc2gpIiwicGxhdGZvcm0iOiJNYWNJbnRlbCIsInNjcmVlbiI6eyJ3aWR0aCI6MTQ0MCwiaGVpZ2h0Ijo5MDAsImF2YWlsV2lkdGgiOjE0NDAsImF2YWlsSGVpZ2h0Ijo5MDAsIndpbmRvd091dGVyV2lkdGgiOjE0NDAsIndpbmRvd091dGVySGVpZ2h0Ijo5MDAsImNvbG9yRGVwdGgiOjMwLCJwaXhlbERlcHRoIjozMH0sInJhbmdlRXJyb3JMZW5ndGgiOjAsImV2YWxTdHJpbmdMZW5ndGgiOjM3LCJwbGF5d3JpZ2h0RGV0ZWN0ZWQiOmZhbHNlLCJwaGFudG9tRGV0ZWN0ZWQiOmZhbHNlLCJuaWdodG1hcmVEZXRlY3RlZCI6ZmFsc2UsInNlbGVuaXVtRGV0ZWN0ZWQiOmZhbHNlLCJwdXBwZXRlZXJEZXRlY3RlZCI6ZmFsc2UsIm1heFRvdWNoUG9pbnRzIjoxMCwicGVybWlzc2lvbnNTdGF0ZSI6InByb21wdCIsIm5vdGlmaWNhdGlvblBlcm1pc3Npb24iOiJkZWZhdWx0IiwiZGV2aWNlUGl4ZWxSYXRpbyI6MS41LCJwbHVnaW5zTGVuZ3RoIjo1LCJtaW1lVHlwZXNDb3VudCI6MiwiZG9jdW1lbnRIaWRkZW4iOmZhbHNlLCJkb2N1bWVudFZpc2liaWxpdHlTdGF0ZSI6InZpc2libGUiLCJtZWRpYVByZWZlcmVuY2VzIjp7ImNvbG9yU2NoZW1lIjoiZGFyayIsInJlZHVjZWRNb3Rpb24iOmZhbHNlLCJyZWR1Y2VkVHJhbnNwYXJlbmN5IjpmYWxzZSwiY29udHJhc3QiOiJuby1wcmVmZXJlbmNlIiwiY29sb3JHYW11dCI6InNyZ2IiLCJoZHIiOmZhbHNlLCJmb3JjZWRDb2xvcnMiOmZhbHNlLCJpbnZlcnRlZENvbG9ycyI6ZmFsc2V9LCJ3ZWJHTFZlbmRvciI6IkFwcGxlIiwid2ViR0xSZW5kZXJlciI6IkFwcGxlIE0xLCBvciBzaW1pbGFyIiwibWluaW1hbFN1cmZhY2UiOnsid2luZG93RmVhdHVyZXNIYXNoIjoiZEdfd0xfY1NEUG9JQ21ieHpSTmowWkhKR1ZPa3dGT0dHaVRpN0w0bFQ5MCIsIndpbmRvd0ZlYXR1cmVzQ291bnQiOjg5MiwiY3NzS2V5c0hhc2giOiJ0bFpUSC1tb0d4XzU1bzYteFN1S0VZTDlkWmsteWJuMklWRnNvQzJmc2RNIiwiY3NzS2V5c0NvdW50IjoxMzExLCJ2b2ljZXNIYXNoIjoiS0tFa3V0YmR3dWZRTlRqSEF6dFZzN3kzWDFEY1YzQWdjNHc2VmlSSmZmVSIsInZvaWNlc0xvY2FsQ291bnQiOjUsInZvaWNlc1JlbW90ZUNvdW50IjowLCJ2b2ljZXNMYW5ndWFnZXNDb3VudCI6MiwibWVkaWFNaW1lSGFzaCI6ImRqYklWbEJucTB3eXZUNG04NXdTVXllcUxpRWVxYVF"
+  },
+  {
+    "url": "https://login.platform.vellum.ai/sign-up/password?state=zPpGhOz1kP49LVCC&redirect_uri=https%3A%2F%2Fwww.vellum.ai%2Faccounts%2Fworkos%2Flogin%2Fcallback%2F&authorization_session_id=01KVJHR360QTPTM4ZX73ZPN193",
+    "method": "POST",
+    "headers": {
+      "accept": "text/x-component",
+      "referer": "https://login.platform.vellum.ai/sign-up/password?state=zPpGhOz1kP49LVCC&redirect_uri=https%3A%2F%2Fwww.vellum.ai%2Faccounts%2Fworkos%2Flogin%2Fcallback%2F&authorization_session_id=01KVJHR360QTPTM4ZX73ZPN193",
+      "next-action": "dfb850e9eeb3eec78d4d33f26012b0f051bb3d74",
+      "content-type": "multipart/form-data; boundary=----geckoformboundary2ce4605f43934c6f23bd837d56435705",
+      "origin": "https://login.platform.vellum.ai"
+    },
+    "post_data": "------geckoformboundary2ce4605f43934c6f23bd837d56435705\r\nContent-Disposition: form-data; name=\"1_signals\"\r\n\r\neyJjcmVhdGVkQXRNcyI6MTc4MTk2MDI5MDI0MywidGltZXpvbmUiOiJBc2lhL0hvbmdfS29uZyIsImxhbmd1YWdlIjoiemgtSEsiLCJoYXJkd2FyZUNvbmN1cnJlbmN5IjoyLCJ3ZWJkcml2ZXIiOmZhbHNlLCJ1c2VyQWdlbnQiOiJNb3ppbGxhLzUuMCAoTWFjaW50b3NoOyBJbnRlbCBNYWMgT1MgWCAxMC4xNTsgcnY6MTM1LjApIEdlY2tvLzIwMTAwMTAxIEZpcmVmb3gvMTM1LjAiLCJhcHBWZXJzaW9uIjoiNS4wIChNYWNpbnRvc2gpIiwicGxhdGZvcm0iOiJNYWNJbnRlbCIsInNjcmVlbiI6eyJ3aWR0aCI6MTQ0MCwiaGVpZ2h0Ijo5MDAsImF2YWlsV2lkdGgiOjE0NDAsImF2YWlsSGVpZ2h0Ijo5MDAsIndpbmRvd091dGVyV2lkdGgiOjE0NDAsIndpbmRvd091dGVySGVpZ2h0Ijo5MDAsImNvbG9yRGVwdGgiOjMwLCJwaXhlbERlcHRoIjozMH0sInJhbmdlRXJyb3JMZW5ndGgiOjAsImV2YWxTdHJpbmdMZW5ndGgiOjM3LCJwbGF5d3JpZ2h0RGV0ZWN0ZWQiOmZhbHNlLCJwaGFudG9tRGV0ZWN0ZWQiOmZhbHNlLCJuaWdodG1hcmVEZXRlY3RlZCI6ZmFsc2UsInNlbGVuaXVtRGV0ZWN0ZWQiOmZhbHNlLCJwdXBwZXRlZXJEZXRlY3RlZCI6ZmFsc2UsIm1heFRvdWNoUG9pbnRzIjoxMCwicGVybWlzc2lvbnNTdGF0ZSI6InByb21wdCIsIm5vdGlmaWNhdGlvblBlcm1pc3Npb24iOiJkZWZhdWx0IiwiZGV2aWNlUGl4ZWxSYXRpbyI6MS41LCJwbHVnaW5zTGVuZ3RoIjo1LCJtaW1lVHlwZXNDb3VudCI6MiwiZG9jdW1lbnRIaWRkZW4iOmZhbHNlLCJkb2N1bWVudFZpc2liaWxpdHlTdGF0ZSI6InZpc2libGUiLCJtZWRpYVByZWZlcmVuY2VzIjp7ImNvbG9yU2NoZW1lIjoiZGFyayIsInJlZHVjZWRNb3Rpb24iOmZhbHNlLCJyZWR1Y2VkVHJhbnNwYXJlbmN5IjpmYWxzZSwiY29udHJhc3QiOiJuby1wcmVmZXJlbmNlIiwiY29sb3JHYW11dCI6InNyZ2IiLCJoZHIiOmZhbHNlLCJmb3JjZWRDb2xvcnMiOmZhbHNlLCJpbnZlcnRlZENvbG9ycyI6ZmFsc2V9LCJ3ZWJHTFZlbmRvciI6IkFwcGxlIiwid2ViR0xSZW5kZXJlciI6IkFwcGxlIE0xLCBvciBzaW1pbGFyIiwibWluaW1hbFN1cmZhY2UiOnsid2luZG93RmVhdHVyZXNIYXNoIjoiRXR2NGdOWDNUOHF2M1JuWHd4QVN2bTVaYXlUUUt0eklFUk16Mk5xS0UydyIsIndpbmRvd0ZlYXR1cmVzQ291bnQiOjg5MywiY3NzS2V5c0hhc2giOiJ0bFpUSC1tb0d4XzU1bzYteFN1S0VZTDlkWmsteWJuMklWRnNvQzJmc2RNIiwiY3NzS2V5c0NvdW50IjoxMzExLCJ2b2ljZXNIYXNoIjoiS0tFa3V0YmR3dWZRTlRqSEF6dFZzN3kzWDFEY1YzQWdjNHc2VmlSSmZmVSIsInZvaWNlc0xvY2FsQ291bnQiOjUsInZvaWNlc1JlbW90ZUNvdW50IjowLCJ2b2ljZXNMYW5ndWFnZXNDb3VudCI6MiwibWVkaWFNaW1lSGFzaCI6ImRqYklWbEJucTB3eXZUNG04NXdTVXllcUxpRWVxYVF"
+  }
+]
