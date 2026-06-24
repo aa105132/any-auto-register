@@ -4,7 +4,8 @@ import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { getPlatforms } from '@/lib/app-data'
 import { apiFetch } from '@/lib/utils'
-import { Ban, Clock3, Database, Plus, RefreshCw, RotateCcw, ShieldCheck, Trash2, Upload, WalletCards } from 'lucide-react'
+import { useActiveTask } from '@/context/ActiveTaskContext'
+import { Ban, Clock3, Database, Plus, RefreshCw, RotateCcw, ShieldCheck, Trash2, Upload, Users, WalletCards } from 'lucide-react'
 
 type GooglePoolAccount = {
   email: string
@@ -80,6 +81,17 @@ export default function GoogleAccountPool() {
   const [notice, setNotice] = useState('')
   const [platforms, setPlatforms] = useState<PlatformMeta[]>([])
 
+  // ─── Workspace 批量建号 ───
+  const { setActiveTask } = useActiveTask()
+  const [wsCount, setWsCount] = useState(50)
+  const [wsRecoveryDomain, setWsRecoveryDomain] = useState('bufan.de5.net')
+  const [wsPassword, setWsPassword] = useState('Bufan123456')
+  const [wsBatchSize, setWsBatchSize] = useState(10)
+  const [wsGenLoading, setWsGenLoading] = useState(false)
+  const [wsCreateLoading, setWsCreateLoading] = useState(false)
+  const [wsUsers, setWsUsers] = useState<any[]>([])
+  const [wsNotice, setWsNotice] = useState('')
+
   const load = async () => {
     setLoading(true)
     setError('')
@@ -118,6 +130,68 @@ export default function GoogleAccountPool() {
   }
 
   const fillExample = () => setImportText('demo1@gmail.com|password123\ndemo2@gmail.com----password456')
+
+  // ─── Workspace 批量操作 ───
+  const loadWsUsers = async () => {
+    try {
+      const d = await apiFetch('/google-workspace/users-json')
+      if (d.ok) setWsUsers(d.users || [])
+    } catch { /* ignore */ }
+  }
+
+  const genWsUsers = async () => {
+    setWsGenLoading(true)
+    setWsNotice('')
+    setError('')
+    try {
+      const d = await apiFetch('/google-workspace/gen-users', {
+        method: 'POST',
+        body: JSON.stringify({
+          count: wsCount,
+          recovery_domain: wsRecoveryDomain,
+          password: wsPassword,
+          one_per_user: true,
+        }),
+      })
+      if (d.ok) {
+        setWsNotice(`已生成 ${d.total} 个用户，其中 ${d.has_recovery} 个有辅助邮箱`)
+        await loadWsUsers()
+      } else {
+        setWsNotice(`生成失败: ${d.stderr || d.error || '未知错误'}`)
+      }
+    } catch (e) {
+      setWsNotice(e instanceof Error ? e.message : '生成用户失败')
+    } finally {
+      setWsGenLoading(false)
+    }
+  }
+
+  const startBulkCreate = async () => {
+    setWsCreateLoading(true)
+    setWsNotice('')
+    setError('')
+    try {
+      const res = await apiFetch('/google-workspace/bulk-create', {
+        method: 'POST',
+        body: JSON.stringify({ limit: 0, offset: 0 }),
+      })
+      setActiveTask({
+        id: res.task_id,
+        platform: 'google_workspace',
+        status: res.status || 'pending',
+        count: res.progress_detail?.total ?? wsCount,
+        succeeded: res.success,
+        failed: res.error_count,
+      })
+      setWsNotice(`已启动批量创建任务 ${res.task_id}，进度请在右下角任务条查看`)
+    } catch (e) {
+      setWsNotice(e instanceof Error ? e.message : '启动批量创建失败')
+    } finally {
+      setWsCreateLoading(false)
+    }
+  }
+
+  useEffect(() => { loadWsUsers() }, [])
 
   const markAccountStatus = async (item: GooglePoolAccount, status: 'valid' | 'invalid') => {
     if (!item.email) return
@@ -287,6 +361,81 @@ demo2@gmail.com----password456"
                 新增 {importResult.created || 0}，重复 {importResult.duplicates || 0}，无效 {importResult.invalid || 0}
               </div>
             ) : null}
+          </aside>
+        </div>
+      </Card>
+
+      {/* ─── Workspace 批量建号 ─── */}
+      <Card className="p-0 overflow-hidden">
+        <div className="border-b border-[var(--color-border)] px-5 py-4">
+          <div className="flex items-center gap-2">
+            <Users className="h-4 w-4 text-[var(--color-accent)]" />
+            <div className="workspace-kicker">Google Workspace 批量建号</div>
+          </div>
+          <h2 className="mt-1 text-base font-semibold text-[var(--color-text)]">Workspace 子账号批量创建</h2>
+          <p className="mt-1 text-sm text-[var(--color-text-secondary)]">生成用户清单 + pangxie/bufan 辅助邮箱 → 浏览器自动填表批量创建。创建时 Google 会自动发登录说明到辅助邮箱。</p>
+        </div>
+        <div className="grid gap-4 p-5 xl:grid-cols-[minmax(0,1fr)_minmax(300px,0.5fr)]">
+          <div className="space-y-4">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label className="block space-y-1.5">
+                <span className="text-xs font-medium text-[var(--color-text-secondary)]">用户数量</span>
+                <input type="number" value={wsCount} min={1} max={100} onChange={(e) => setWsCount(Number(e.target.value))}
+                  className="control-surface control-surface-compact" />
+              </label>
+              <label className="block space-y-1.5">
+                <span className="text-xs font-medium text-[var(--color-text-secondary)]">辅助邮箱域</span>
+                <select value={wsRecoveryDomain} onChange={(e) => setWsRecoveryDomain(e.target.value)}
+                  className="control-surface control-surface-compact appearance-none">
+                  <option value="bufan.de5.net">bufan.de5.net</option>
+                  <option value="pangxie888.com">pangxie888.com</option>
+                  <option value="chenbufan.cloud">chenbufan.cloud</option>
+                </select>
+              </label>
+              <label className="block space-y-1.5">
+                <span className="text-xs font-medium text-[var(--color-text-secondary)]">统一密码</span>
+                <input type="text" value={wsPassword} onChange={(e) => setWsPassword(e.target.value)}
+                  className="control-surface control-surface-compact" />
+              </label>
+              <label className="block space-y-1.5">
+                <span className="text-xs font-medium text-[var(--color-text-secondary)]">每批数量</span>
+                <input type="number" value={wsBatchSize} min={1} max={10} onChange={(e) => setWsBatchSize(Number(e.target.value))}
+                  className="control-surface control-surface-compact" />
+              </label>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button size="sm" onClick={genWsUsers} disabled={wsGenLoading}>
+                <Plus className="mr-1 h-3.5 w-3.5" />{wsGenLoading ? '生成中...' : '生成用户清单'}
+              </Button>
+              <Button size="sm" variant="default" onClick={startBulkCreate} disabled={wsCreateLoading || wsUsers.length === 0}>
+                <Users className="mr-1 h-3.5 w-3.5" />{wsCreateLoading ? '启动中...' : '开始批量创建'}
+              </Button>
+              <Button size="sm" variant="outline" onClick={loadWsUsers}>
+                <RefreshCw className="mr-1 h-3.5 w-3.5" />刷新清单
+              </Button>
+            </div>
+            {wsNotice ? (
+              <div className="rounded-md border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-300">{wsNotice}</div>
+            ) : null}
+          </div>
+          <aside className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
+            <div className="workspace-kicker">用户清单</div>
+            <div className="mt-2 text-sm text-[var(--color-text)]">
+              {wsUsers.length > 0 ? `${wsUsers.length} 个用户` : '尚未生成'}
+            </div>
+            {wsUsers.length > 0 ? (
+              <div className="mt-3 max-h-48 space-y-1 overflow-y-auto text-xs text-[var(--color-text-secondary)]">
+                {wsUsers.slice(0, 20).map((u, i) => (
+                  <div key={i} className="flex items-center justify-between gap-2 font-mono">
+                    <span className="truncate">{u.email}</span>
+                    <span className="text-[var(--color-text-muted)]">{u.recovery_email ? '✓' : '✗'}</span>
+                  </div>
+                ))}
+                {wsUsers.length > 20 ? <div className="pt-1 text-[var(--color-text-muted)]">...还有 {wsUsers.length - 20} 个</div> : null}
+              </div>
+            ) : (
+              <p className="mt-2 text-xs text-[var(--color-text-muted)]">先点「生成用户清单」创建辅助邮箱，再点「开始批量创建」。</p>
+            )}
           </aside>
         </div>
       </Card>

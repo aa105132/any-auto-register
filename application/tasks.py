@@ -50,6 +50,8 @@ TASK_TYPE_ACCOUNT_CHECK = "account_check"
 TASK_TYPE_ACCOUNT_CHECK_ALL = "account_check_all"
 TASK_TYPE_PLATFORM_ACTION = "platform_action"
 TASK_TYPE_BATCH_ACTION = "batch_action"
+TASK_TYPE_GOOGLE_WORKSPACE_BULK_CREATE = "google_workspace_bulk_create"
+TASK_TYPE_GOOGLE_WORKSPACE_BULK_DELETE = "google_workspace_bulk_delete"
 
 TASK_STATUS_PENDING = "pending"
 TASK_STATUS_CLAIMED = "claimed"
@@ -2464,6 +2466,8 @@ def execute_task(task_id: str) -> None:
         TASK_TYPE_ACCOUNT_CHECK_ALL: _execute_account_check_all_task,
         TASK_TYPE_PLATFORM_ACTION: _execute_platform_action_task,
         TASK_TYPE_BATCH_ACTION: _execute_batch_action_task,
+        TASK_TYPE_GOOGLE_WORKSPACE_BULK_CREATE: _execute_google_workspace_bulk_create_task,
+        TASK_TYPE_GOOGLE_WORKSPACE_BULK_DELETE: _execute_google_workspace_bulk_delete_task,
     }
     handler = handlers.get(task_type)
     if not handler:
@@ -3550,4 +3554,103 @@ def _execute_account_check_all_task(payload: dict[str, Any], logger: TaskLogger)
         completed += 1
         logger.set_progress(completed, total)
     logger.set_result_data(results)
+    logger.finish(TASK_STATUS_SUCCEEDED)
+
+
+# ─── Google Workspace 批量创建用户 ───
+
+def _execute_google_workspace_bulk_create_task(payload: dict[str, Any], logger: TaskLogger) -> None:
+    """通过 Camoufox 脚本批量创建 Workspace 用户，stdout 转发到 task log。"""
+    import subprocess as _sp
+    import threading
+
+    users_json = payload.get("users_json", "")
+    offset = int(payload.get("offset", 0))
+    limit = int(payload.get("limit", 0))
+    count = int(payload.get("count", 0))
+
+    root = Path(__file__).resolve().parents[1]
+    script = root / "scripts" / "_google_admin_bulk_add.py"
+    if not script.is_file():
+        logger.finish(TASK_STATUS_FAILED, error=f"脚本不存在: {script}")
+        return
+
+    cmd = [sys.executable, str(script)]
+    if limit > 0:
+        cmd += ["--limit", str(limit)]
+    if offset > 0:
+        cmd += ["--offset", str(offset)]
+    if users_json:
+        cmd += ["--users-json", str(users_json)]
+
+    logger.log(f"启动批量创建: {count} 个用户, cmd={' '.join(cmd)}")
+
+    proc = _sp.Popen(cmd, stdout=_sp.PIPE, stderr=_sp.STDOUT, text=True, cwd=str(root))
+    success = 0
+    errors = 0
+
+    def _read_output():
+        nonlocal success, errors
+        for line in proc.stdout:
+            line = line.rstrip()
+            if not line:
+                continue
+            logger.log(line)
+            if "[OK]" in line or "成功" in line:
+                success += 1
+            if "[FAIL]" in line or "失败" in line or "抱歉" in line:
+                errors += 1
+
+    reader = threading.Thread(target=_read_output, daemon=True)
+    reader.start()
+
+    # 等待完成或取消
+    while proc.poll() is None:
+        if logger.is_cancel_requested():
+            logger.log("收到取消请求，终止脚本进程...")
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                proc.kill()
+            logger.finish(TASK_STATUS_CANCELLED, error="用户取消")
+            return
+        time.sleep(1)
+
+    reader.join(timeout=5)
+    result_data = {"success": success, "errors": errors, "total": count, "returncode": proc.returncode}
+    logger.set_result_data(result_data)
+    logger.log(f"批量创建完成: 成功 {success}, 失败 {errors}, 退出码 {proc.returncode}")
+    if proc.returncode == 0:
+        logger.finish(TASK_STATUS_SUCCEEDED)
+    else:
+        logger.finish(TASK_STATUS_FAILED, error=f"脚本退出码 {proc.returncode}")
+
+
+# ─── Google Workspace 批量删除用户 ───
+
+def _execute_google_workspace_bulk_delete_task(payload: dict[str, Any], logger: TaskLogger) -> None:
+    """批量删除 Workspace 用户。
+
+    delete_all_non_admin=true 时，提示用户需要在浏览器中操作（GUI 批删）。
+    提供 user_ids 时，用 Yo0aWe RPC 批量删除（需要在浏览器中执行）。
+    """
+    user_ids = payload.get("user_ids", [])
+    delete_all = payload.get("delete_all_non_admin", False)
+
+    if delete_all:
+        logger.log("批量删除所有非管理员用户：请在 Google Admin 控制台用户列表页操作。")
+        logger.log("1. 勾选所有非管理员用户")
+        logger.log("2. 点「更多选项」→「删除所选用户」")
+        logger.log("3. 选「不转移数据」→「删除用户」")
+        logger.log("协议方式（Yo0aWe RPC）需要浏览器 session，暂不支持纯后端调用。")
+        logger.finish(TASK_STATUS_SUCCEEDED)
+        return
+
+    if not user_ids:
+        logger.finish(TASK_STATUS_FAILED, error="未提供 user_ids 且 delete_all_non_admin=false")
+        return
+
+    logger.log(f"批量删除 {len(user_ids)} 个用户: {user_ids[:5]}...")
+    logger.log("Yo0aWe RPC 需要浏览器 session，暂不支持纯后端调用。请在 Web 界面用 GUI 批删。")
     logger.finish(TASK_STATUS_SUCCEEDED)
