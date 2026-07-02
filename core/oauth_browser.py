@@ -1,4 +1,14 @@
 """共享的 OAuth 浏览器辅助（支持普通 Playwright / Chrome Profile / CDP）。"""
+import os
+
+# Windows + numpy(scipy-openblas) 多线程在 Camoufox 启动时会分配线程栈 OOM 崩溃
+# (OpenBLAS error: Memory allocation still failed after 10 retries)。必须在 numpy
+# 首次 import 前限制 BLAS 单线程；Camoufox 在 __enter__ 才延迟 import numpy，此处
+# 模块加载点能在多数 OAuth 路径的 numpy 加载前生效。setdefault 不覆盖调用方显式设置。
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+
 import shutil
 import tempfile
 import time

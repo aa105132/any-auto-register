@@ -27,6 +27,12 @@ class EmberCloudPlatform(BasePlatform):
     # Clerk 注册带 Turnstile；临时邮箱域不封但 YYDS Mail 收不到 EmberCloud 邮件，
     # 默认复用 Outlook Token IMAP（已扫 INBOX/Junk/Junk Email）。
     default_mail_provider = "outlook_token"
+    # Turnstile 解码顺序：本地 solver 服务（camoufox 模式，实测能本地解 EmberCloud
+    # Clerk managed Turnstile 拿 token）优先，yescaptcha 远程兜底，2captcha 最后。
+    # 实测：playwright/patchright/camoufox launch 的浏览器 Cloudflare 直接不渲染 widget，
+    # 自动化点击也过不了；唯有本地 solver 服务（完整资源加载 + 多策略点击 + widget 注入）
+    # 或远程打码能拿到 token。local_solver 无需外部 API key，优先用。
+    protocol_captcha_order = ("local_solver", "yescaptcha", "2captcha")
 
     def __init__(self, config: RegisterConfig = None, mailbox: BaseMailbox = None):
         super().__init__(config)
@@ -34,6 +40,17 @@ class EmberCloudPlatform(BasePlatform):
 
     def _prepare_registration_password(self, password: str | None) -> str | None:
         return password or self._make_random_password(length=18)
+
+    def _captcha_preflight(self, ctx) -> None:
+        """local_solver 模式需要本地 Turnstile solver 服务在跑，注册前自动拉起。
+
+        solver 服务（services/turnstile_solver，camoufox 模式）实测能本地解 EmberCloud
+        Clerk managed Turnstile 拿到 700+ 字符 token 并被 Clerk 接受。
+        """
+        if ctx.platform._resolve_captcha_solver() == "local_solver":
+            from services.solver_manager import start
+
+            start()
 
     def _map_result(self, result: dict, *, password: str = "") -> RegistrationResult:
         api_key = str(result.get("api_key") or "").strip()
@@ -70,34 +87,32 @@ class EmberCloudPlatform(BasePlatform):
         )
 
     def build_protocol_mailbox_adapter(self):
-        extra = (self.config.extra if self.config else {}) or {}
+        # 纯协议注册：Clerk Frontend API sign_up + 本地 Turnstile solver（camoufox 模式）
+        # 拿 token 注入 sign_up + 邮箱 OTP + 协议拿 key（dashboard credit 预热 + Server
+        # Action 创建 ek_live_）。
+        # 实测：浏览器内 Clerk managed Turnstile 在自动化 Chrome/Firefox 下 Cloudflare 直接
+        # 不渲染 widget（playwright/patchright/camoufox launch 均被识破），点 checkbox 也
+        # 过不了；唯有本地 solver 服务（完整资源加载 + 多策略点击 + widget 注入）或远程
+        # 打码能拿到 token。local_solver 优先（无需外部 API key），preflight 自动拉起服务。
         return ProtocolMailboxAdapter(
             result_mapper=lambda ctx, result: self._map_result(result, password=ctx.password or ""),
             worker_builder=lambda ctx, artifacts: __import__(
-                "platforms.embercloud.browser_register",
-                fromlist=["EmberCloudBrowserRegistrar"],
-            ).EmberCloudBrowserRegistrar(
+                "platforms.embercloud.protocol_mailbox",
+                fromlist=["EmberCloudProtocolMailboxWorker"],
+            ).EmberCloudProtocolMailboxWorker(
                 proxy=ctx.proxy,
-                otp_callback=artifacts.otp_callback,
                 api_key_name=str(
                     ctx.extra.get("embercloud_api_key_name")
                     or ctx.extra.get("api_key_name")
                     or "auto-register"
                 ),
-                timeout=resolve_timeout(
-                    ctx.extra,
-                    ("embercloud_browser_timeout", "browser_oauth_timeout", "manual_oauth_timeout"),
-                    240,
-                ),
-                chrome_path=str(extra.get("embercloud_chrome_path", "") or ""),
-                cdp_url=str(extra.get("embercloud_cdp_url", "") or ""),
-                headless=str(extra.get("embercloud_headless", "false") or "false").strip().lower() in {"1", "true", "yes"},
                 log_fn=ctx.log,
-                cancel_token=getattr(ctx, "cancel_token", None),
             ),
             register_runner=lambda worker, ctx, artifacts: worker.run(
                 email=ctx.identity.email,
                 password=ctx.password or "",
+                otp_callback=artifacts.otp_callback,
+                captcha_solver=artifacts.captcha_solver,
             ),
             otp_spec=OtpSpec(
                 keyword="Ember",
@@ -105,8 +120,9 @@ class EmberCloudPlatform(BasePlatform):
                 wait_message="Waiting for EmberCloud email verification code (scans INBOX + Junk)...",
                 success_label="EmberCloud OTP",
             ),
-            # Turnstile 在浏览器里由 Clerk 组件自动处理，不需要 captcha_solver。
-            use_captcha=False,
+            # Turnstile 由本地 solver 服务（camoufox）拿 token 注入 sign_up，必须启用 captcha_solver。
+            use_captcha=True,
+            preflight=self._captcha_preflight,
         )
 
     def check_valid(self, account: Account) -> bool:

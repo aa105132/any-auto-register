@@ -12,6 +12,11 @@ from services.twoapi.server_runtime import twoapi_server_runtime
 
 management_router = APIRouter(prefix="/2api", tags=["2api"])
 thesys_proxy_router = APIRouter(prefix="/thesys/v1", tags=["2api-proxy"])
+kombai_proxy_router = APIRouter(prefix="/kombai/v1", tags=["2api-proxy"])
+clickup_proxy_router = APIRouter(prefix="/clickup/v1", tags=["2api-proxy"])
+promptql_proxy_router = APIRouter(prefix="/promptql/v1", tags=["2api-proxy"])
+runbear_proxy_router = APIRouter(prefix="/runbear/v1", tags=["2api-proxy"])
+hex_proxy_router = APIRouter(prefix="/hex/v1", tags=["2api-proxy"])
 
 
 class TwoAPIKeyCreateRequest(BaseModel):
@@ -400,6 +405,266 @@ async def thesys_chat_with_token(path_token: str, request: Request, authorizatio
         payload = await request.json()
         want_stream = bool(payload.get("stream")) if isinstance(payload, dict) else False
         upstream = get_twoapi_manager().get_plugin("thesys").forward_chat(payload, stream=want_stream)
+        return _response_from_upstream(upstream, stream=want_stream)
+    except HTTPException as exc:
+        return _handle_http_exception(exc)
+    except Exception as exc:
+        return _openai_error(str(exc), status_code=503, code="no_available_account")
+
+
+@kombai_proxy_router.get("/models")
+def kombai_models(authorization: str = Header(default="")):
+    try:
+        _require_key(authorization=authorization, plugin="kombai")
+        upstream = get_twoapi_manager().get_plugin("kombai").forward_models()
+        return _response_from_upstream(upstream)
+    except HTTPException as exc:
+        return _handle_http_exception(exc)
+    except Exception as exc:
+        return _openai_error(str(exc), status_code=503, code="no_available_account")
+
+
+@kombai_proxy_router.get("/{path_token}/models")
+def kombai_models_with_token(path_token: str, authorization: str = Header(default="")):
+    try:
+        _require_key(path_token=path_token, authorization=authorization, plugin="kombai")
+        upstream = get_twoapi_manager().get_plugin("kombai").forward_models()
+        return _response_from_upstream(upstream)
+    except HTTPException as exc:
+        return _handle_http_exception(exc)
+    except Exception as exc:
+        return _openai_error(str(exc), status_code=503, code="no_available_account")
+
+
+@kombai_proxy_router.post("/chat/completions")
+async def kombai_chat(request: Request, authorization: str = Header(default="")):
+    try:
+        _require_key(authorization=authorization, plugin="kombai")
+        payload = await request.json()
+        want_stream = bool(payload.get("stream")) if isinstance(payload, dict) else False
+        upstream = get_twoapi_manager().get_plugin("kombai").forward_chat(payload, stream=want_stream)
+        return _response_from_upstream(upstream, stream=want_stream)
+    except HTTPException as exc:
+        return _handle_http_exception(exc)
+    except Exception as exc:
+        return _openai_error(str(exc), status_code=503, code="no_available_account")
+
+
+@kombai_proxy_router.post("/{path_token}/chat/completions")
+async def kombai_chat_with_token(path_token: str, request: Request, authorization: str = Header(default="")):
+    try:
+        _require_key(path_token=path_token, authorization=authorization, plugin="kombai")
+        payload = await request.json()
+        want_stream = bool(payload.get("stream")) if isinstance(payload, dict) else False
+        upstream = get_twoapi_manager().get_plugin("kombai").forward_chat(payload, stream=want_stream)
+        return _response_from_upstream(upstream, stream=want_stream)
+    except HTTPException as exc:
+        return _handle_http_exception(exc)
+    except Exception as exc:
+        return _openai_error(str(exc), status_code=503, code="no_available_account")
+
+
+@clickup_proxy_router.get("/models")
+def clickup_models(authorization: str = Header(default="")):
+    try:
+        _require_key(authorization=authorization, plugin="clickup")
+        upstream = get_twoapi_manager().get_plugin("clickup").forward_models()
+        return _response_from_upstream(upstream)
+    except HTTPException as exc:
+        return _handle_http_exception(exc)
+    except Exception as exc:
+        return _openai_error(str(exc), status_code=503, code="no_available_account")
+
+
+@clickup_proxy_router.get("/{path_token}/models")
+def clickup_models_with_token(path_token: str, authorization: str = Header(default="")):
+    try:
+        _require_key(path_token=path_token, authorization=authorization, plugin="clickup")
+        upstream = get_twoapi_manager().get_plugin("clickup").forward_models()
+        return _response_from_upstream(upstream)
+    except HTTPException as exc:
+        return _handle_http_exception(exc)
+    except Exception as exc:
+        return _openai_error(str(exc), status_code=503, code="no_available_account")
+
+
+@clickup_proxy_router.post("/chat/completions")
+async def clickup_chat(request: Request, authorization: str = Header(default="")):
+    try:
+        _require_key(authorization=authorization, plugin="clickup")
+        payload = await request.json()
+        want_stream = bool(payload.get("stream")) if isinstance(payload, dict) else False
+        upstream = get_twoapi_manager().get_plugin("clickup").forward_chat(payload, stream=want_stream)
+        return _response_from_upstream(upstream, stream=want_stream)
+    except HTTPException as exc:
+        return _handle_http_exception(exc)
+    except Exception as exc:
+        return _openai_error(str(exc), status_code=503, code="no_available_account")
+
+
+@clickup_proxy_router.post("/{path_token}/chat/completions")
+async def clickup_chat_with_token(path_token: str, request: Request, authorization: str = Header(default="")):
+    try:
+        _require_key(path_token=path_token, authorization=authorization, plugin="clickup")
+        payload = await request.json()
+        want_stream = bool(payload.get("stream")) if isinstance(payload, dict) else False
+        upstream = get_twoapi_manager().get_plugin("clickup").forward_chat(payload, stream=want_stream)
+        return _response_from_upstream(upstream, stream=want_stream)
+    except HTTPException as exc:
+        return _handle_http_exception(exc)
+    except Exception as exc:
+        return _openai_error(str(exc), status_code=503, code="no_available_account")
+
+
+@promptql_proxy_router.get("/models")
+def promptql_models(authorization: str = Header(default="")):
+    try:
+        _require_key(authorization=authorization, plugin="promptql")
+        upstream = get_twoapi_manager().get_plugin("promptql").forward_models()
+        return _response_from_upstream(upstream)
+    except HTTPException as exc:
+        return _handle_http_exception(exc)
+    except Exception as exc:
+        return _openai_error(str(exc), status_code=503, code="no_available_account")
+
+
+@promptql_proxy_router.get("/{path_token}/models")
+def promptql_models_with_token(path_token: str, authorization: str = Header(default="")):
+    try:
+        _require_key(path_token=path_token, authorization=authorization, plugin="promptql")
+        upstream = get_twoapi_manager().get_plugin("promptql").forward_models()
+        return _response_from_upstream(upstream)
+    except HTTPException as exc:
+        return _handle_http_exception(exc)
+    except Exception as exc:
+        return _openai_error(str(exc), status_code=503, code="no_available_account")
+
+
+@promptql_proxy_router.post("/chat/completions")
+async def promptql_chat(request: Request, authorization: str = Header(default="")):
+    try:
+        _require_key(authorization=authorization, plugin="promptql")
+        payload = await request.json()
+        want_stream = bool(payload.get("stream")) if isinstance(payload, dict) else False
+        upstream = get_twoapi_manager().get_plugin("promptql").forward_chat(payload, stream=want_stream)
+        return _response_from_upstream(upstream, stream=want_stream)
+    except HTTPException as exc:
+        return _handle_http_exception(exc)
+    except Exception as exc:
+        return _openai_error(str(exc), status_code=503, code="no_available_account")
+
+
+@promptql_proxy_router.post("/{path_token}/chat/completions")
+async def promptql_chat_with_token(path_token: str, request: Request, authorization: str = Header(default="")):
+    try:
+        _require_key(path_token=path_token, authorization=authorization, plugin="promptql")
+        payload = await request.json()
+        want_stream = bool(payload.get("stream")) if isinstance(payload, dict) else False
+        upstream = get_twoapi_manager().get_plugin("promptql").forward_chat(payload, stream=want_stream)
+        return _response_from_upstream(upstream, stream=want_stream)
+    except HTTPException as exc:
+        return _handle_http_exception(exc)
+    except Exception as exc:
+        return _openai_error(str(exc), status_code=503, code="no_available_account")
+
+
+@hex_proxy_router.get("/models")
+def hex_models(authorization: str = Header(default="")):
+    try:
+        _require_key(authorization=authorization, plugin="hex")
+        upstream = get_twoapi_manager().get_plugin("hex").forward_models()
+        return _response_from_upstream(upstream)
+    except HTTPException as exc:
+        return _handle_http_exception(exc)
+    except Exception as exc:
+        return _openai_error(str(exc), status_code=503, code="no_available_account")
+
+
+@hex_proxy_router.get("/{path_token}/models")
+def hex_models_with_token(path_token: str, authorization: str = Header(default="")):
+    try:
+        _require_key(path_token=path_token, authorization=authorization, plugin="hex")
+        upstream = get_twoapi_manager().get_plugin("hex").forward_models()
+        return _response_from_upstream(upstream)
+    except HTTPException as exc:
+        return _handle_http_exception(exc)
+    except Exception as exc:
+        return _openai_error(str(exc), status_code=503, code="no_available_account")
+
+
+@hex_proxy_router.post("/chat/completions")
+async def hex_chat(request: Request, authorization: str = Header(default="")):
+    try:
+        _require_key(authorization=authorization, plugin="hex")
+        payload = await request.json()
+        want_stream = bool(payload.get("stream")) if isinstance(payload, dict) else False
+        upstream = get_twoapi_manager().get_plugin("hex").forward_chat(payload, stream=want_stream)
+        return _response_from_upstream(upstream, stream=want_stream)
+    except HTTPException as exc:
+        return _handle_http_exception(exc)
+    except Exception as exc:
+        return _openai_error(str(exc), status_code=503, code="no_available_account")
+
+
+@hex_proxy_router.post("/{path_token}/chat/completions")
+async def hex_chat_with_token(path_token: str, request: Request, authorization: str = Header(default="")):
+    try:
+        _require_key(path_token=path_token, authorization=authorization, plugin="hex")
+        payload = await request.json()
+        want_stream = bool(payload.get("stream")) if isinstance(payload, dict) else False
+        upstream = get_twoapi_manager().get_plugin("hex").forward_chat(payload, stream=want_stream)
+        return _response_from_upstream(upstream, stream=want_stream)
+    except HTTPException as exc:
+        return _handle_http_exception(exc)
+    except Exception as exc:
+        return _openai_error(str(exc), status_code=503, code="no_available_account")
+
+
+@runbear_proxy_router.get("/models")
+def runbear_models(authorization: str = Header(default="")):
+    try:
+        _require_key(authorization=authorization, plugin="runbear")
+        upstream = get_twoapi_manager().get_plugin("runbear").forward_models()
+        return _response_from_upstream(upstream)
+    except HTTPException as exc:
+        return _handle_http_exception(exc)
+    except Exception as exc:
+        return _openai_error(str(exc), status_code=503, code="no_available_account")
+
+
+@runbear_proxy_router.get("/{path_token}/models")
+def runbear_models_with_token(path_token: str, authorization: str = Header(default="")):
+    try:
+        _require_key(path_token=path_token, authorization=authorization, plugin="runbear")
+        upstream = get_twoapi_manager().get_plugin("runbear").forward_models()
+        return _response_from_upstream(upstream)
+    except HTTPException as exc:
+        return _handle_http_exception(exc)
+    except Exception as exc:
+        return _openai_error(str(exc), status_code=503, code="no_available_account")
+
+
+@runbear_proxy_router.post("/chat/completions")
+async def runbear_chat(request: Request, authorization: str = Header(default="")):
+    try:
+        _require_key(authorization=authorization, plugin="runbear")
+        payload = await request.json()
+        want_stream = bool(payload.get("stream")) if isinstance(payload, dict) else False
+        upstream = get_twoapi_manager().get_plugin("runbear").forward_chat(payload, stream=want_stream)
+        return _response_from_upstream(upstream, stream=want_stream)
+    except HTTPException as exc:
+        return _handle_http_exception(exc)
+    except Exception as exc:
+        return _openai_error(str(exc), status_code=503, code="no_available_account")
+
+
+@runbear_proxy_router.post("/{path_token}/chat/completions")
+async def runbear_chat_with_token(path_token: str, request: Request, authorization: str = Header(default="")):
+    try:
+        _require_key(path_token=path_token, authorization=authorization, plugin="runbear")
+        payload = await request.json()
+        want_stream = bool(payload.get("stream")) if isinstance(payload, dict) else False
+        upstream = get_twoapi_manager().get_plugin("runbear").forward_chat(payload, stream=want_stream)
         return _response_from_upstream(upstream, stream=want_stream)
     except HTTPException as exc:
         return _handle_http_exception(exc)

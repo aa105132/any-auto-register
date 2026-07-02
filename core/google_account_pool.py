@@ -248,6 +248,36 @@ class GoogleAccountPool:
                 "total_before": len(accounts),
             }
 
+    def release_stale(self, platform: str = "") -> list[tuple[str, list[str]]]:
+        """扫描并清理陈旧的 reserved_platforms 锁，返回 [(email, [platforms...]), ...]。
+
+        陈旧 = reserved 含某平台但 registered 不含该平台（注册失败未释放残留）。
+        platform 非空时只处理该平台。锁内一次性扫描+清理，避免脚本与 core 各读一遍 JSON。
+        """
+        target = self._platform_key(platform)
+        stale: list[tuple[str, list[str]]] = []
+        with self._lock:
+            data = self._read()
+            for item in data.get("accounts", []):
+                if str(item.get("status") or "valid").strip().lower() == "invalid":
+                    continue
+                reserved = {self._platform_key(p) for p in self._reserved_platforms(item)}
+                registered = {self._platform_key(p) for p in item.get("registered_platforms", [])}
+                stale_platforms = sorted(p for p in (reserved - registered) if (not target or p == target))
+                if not stale_platforms:
+                    continue
+                email = str(item.get("email") or "")
+                stale.append((email, stale_platforms))
+                # 锁内直接清该号的所有陈旧平台锁。
+                remaining = [p for p in self._reserved_platforms(item) if self._platform_key(p) not in {sp for sp in stale_platforms}]
+                if remaining:
+                    item["reserved_platforms"] = remaining
+                else:
+                    item.pop("reserved_platforms", None)
+            if stale:
+                self._write(data)
+        return stale
+
     def add_account(
         self,
         email: str,

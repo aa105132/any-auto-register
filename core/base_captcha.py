@@ -62,6 +62,57 @@ class YesCaptcha(BaseCaptcha):
                 raise RuntimeError(f"YesCaptcha 错误: {d}")
         raise TimeoutError("YesCaptcha Turnstile 超时")
 
+    def solve_hcaptcha(self, page_url: str, site_key: str, proxy: str | None = None, user_agent: str = "", invisible: bool = False) -> str:
+        """YesCaptcha 解 hCaptcha（Stripe 绑卡用）。
+
+        YesCaptcha 支持 HCaptchaTaskProxyless / HCaptchaTask。返回 h-captcha-response token。
+        invisible=True 用于不可见 hCaptcha（Stripe 内嵌的常是 invisible）。
+        """
+        import requests, time, urllib.parse, urllib3
+        urllib3.disable_warnings()
+        task = {
+            "type": "HCaptchaTaskProxyless",
+            "websiteURL": page_url,
+            "websiteKey": site_key,
+            "isInvisible": bool(invisible),
+        }
+        if proxy:
+            parsed = urllib.parse.urlsplit(proxy)
+            if parsed.hostname:
+                task = {
+                    "type": "HCaptchaTask",
+                    "websiteURL": page_url,
+                    "websiteKey": site_key,
+                    "isInvisible": bool(invisible),
+                    "proxyType": (parsed.scheme or "http").lower(),
+                    "proxyAddress": parsed.hostname,
+                    "proxyPort": int(parsed.port or 80),
+                    "proxyLogin": urllib.parse.unquote(parsed.username or ""),
+                    "proxyPassword": urllib.parse.unquote(parsed.password or ""),
+                }
+        if user_agent:
+            task["userAgent"] = user_agent
+        session = requests.Session()
+        session.trust_env = False
+        r = session.post(f"{self.api}/createTask", json={
+            "clientKey": self.client_key, "task": task,
+        }, timeout=30, verify=False)
+        task_id = r.json().get("taskId")
+        if not task_id:
+            raise RuntimeError(f"YesCaptcha hCaptcha 创建任务失败: {r.text}")
+        for _ in range(80):
+            time.sleep(3)
+            d = session.post(f"{self.api}/getTaskResult", json={
+                "clientKey": self.client_key, "taskId": task_id
+            }, timeout=30, verify=False).json()
+            if d.get("status") == "ready":
+                sol = d.get("solution") or {}
+                # hCaptcha solution: {"gRecaptchaResponse":"P0_...", ".userAgent":"..."}
+                return sol.get("gRecaptchaResponse") or sol.get("token") or ""
+            if d.get("errorId", 0) != 0:
+                raise RuntimeError(f"YesCaptcha hCaptcha 错误: {d}")
+        raise TimeoutError("YesCaptcha hCaptcha 超时")
+
     def solve_image(self, image_b64: str) -> str:
         raise NotImplementedError
 

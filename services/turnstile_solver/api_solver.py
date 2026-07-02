@@ -699,7 +699,18 @@ class TurnstileAPIServer:
         await self._antishadow_inject(page)
         
         # Skip resource blocking for Clerk/Venice — full rendering needed for form
-        _is_clerk_page = 'venice.ai' in url.lower() or 'clerk' in url.lower()
+        # EmberCloud (embercloud.ai) 注册页由 Clerk 托管（clerk.embercloud.ai Frontend API +
+        # Clerk 渲染的 sign_up 表单 + Cloudflare Turnstile widget），需完整资源加载，否则
+        # widget 不渲染、表单缺失。sign-in/sign-up/create 路径均为 Clerk 托管页。
+        url_lower = url.lower()
+        _is_clerk_page = (
+            'venice.ai' in url_lower
+            or 'clerk' in url_lower
+            or 'embercloud.ai' in url_lower
+            or '/sign-in' in url_lower
+            or '/sign-up' in url_lower
+            or '/create' in url_lower
+        )
         if not _is_clerk_page:
             await self._block_rendering(page)
 

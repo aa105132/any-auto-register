@@ -78,6 +78,7 @@ export default function GoogleAccountPool() {
   const [platformFilterMode, setPlatformFilterMode] = useState<'registered' | 'missing'>('missing')
   const [statusUpdatingEmail, setStatusUpdatingEmail] = useState('')
   const [deletingInvalid, setDeletingInvalid] = useState(false)
+  const [releasingStale, setReleasingStale] = useState(false)
   const [notice, setNotice] = useState('')
   const [platforms, setPlatforms] = useState<PlatformMeta[]>([])
 
@@ -233,6 +234,24 @@ export default function GoogleAccountPool() {
     }
   }
 
+  const releaseStaleReserved = async () => {
+    if (!window.confirm('确认扫描并释放所有陈旧 reserved_platforms 锁（注册失败未释放的残留）？\n\n执行前请确认没有对应平台任务在跑，否则会撞号。')) return
+    setReleasingStale(true)
+    setError('')
+    setNotice('')
+    try {
+      const result = await apiFetch('/google-account-pool/release-stale', { method: 'POST', body: JSON.stringify({}) })
+      const released = result?.released || 0
+      const affected = result?.affected?.length || 0
+      setNotice(released > 0 ? `已释放 ${released} 个陈旧锁，涉及 ${affected} 个账号` : '池是干净的，无陈旧锁')
+      await load()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '释放陈旧锁失败')
+    } finally {
+      setReleasingStale(false)
+    }
+  }
+
   useEffect(() => { load() }, [])
 
   useEffect(() => {
@@ -309,6 +328,10 @@ export default function GoogleAccountPool() {
             </a>
             <Button size="sm" variant="destructive" onClick={deleteInvalidAccounts} disabled={deletingInvalid || invalidCount === 0}>
               <Trash2 className="mr-1 h-3.5 w-3.5" />{deletingInvalid ? '删除中...' : `删除失效账号 (${invalidCount})`}
+            </Button>
+            <Button size="sm" variant="outline" onClick={releaseStaleReserved} disabled={releasingStale}>
+              <RotateCcw className={`mr-1 h-3.5 w-3.5 ${releasingStale ? 'animate-spin' : ''}`} />
+              {releasingStale ? '释放中...' : '释放陈旧锁'}
             </Button>
             <Badge variant="secondary">来源 output/google_accounts_pool.json</Badge>
           </div>

@@ -186,6 +186,142 @@ class OAuthRegressionTests(unittest.TestCase):
         self.assertEqual(result.extra["expires_in"], 3600)
         self.assertEqual(result.extra["token_type"], "bearer")
 
+class GooglePoolReleaseRegressions(unittest.TestCase):
+    """注册失败释放 reserved_platforms 的回归测试。
+
+    覆盖补丁A（base_platform.register raise 路径释放）与补丁C（release_stale 清陈旧锁）。
+    """
+
+    def _write_pool(self, pool_path: Path, accounts: list) -> None:
+        import json
+
+        pool_path.write_text(
+            json.dumps({"version": 1, "accounts": accounts}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+    def _pool_with_reserved(self, pool_path: Path) -> "GoogleAccountPool":
+        from core.google_account_pool import GoogleAccountPool
+
+        return GoogleAccountPool(pool_path)
+
+    def test_register_raises_releases_reserved_via_identity(self):
+        """register 中途抛异常（account 未返回、_attach_identity_metadata 没机会透传）时，
+        base_platform.register 必须从 identity.mailbox_account.extra 读 reserved 邮箱并 release，
+        否则 reserved_platforms 永久残留、号被耗光。"""
+        import json
+        from unittest.mock import patch
+        from types import SimpleNamespace
+
+        from core.base_platform import RegisterConfig
+
+        with tempfile.TemporaryDirectory() as tmp:
+            pool_path = Path(tmp) / "google_accounts_pool.json"
+            self._write_pool(pool_path, [{
+                "email": "stale1@gmail.com",
+                "password": "pw",
+                "registered_platforms": [],
+                "reserved_platforms": ["tryblend"],
+                "status": "valid",
+            }])
+            pool = self._pool_with_reserved(pool_path)
+
+            platform = TryBlendPlatform(config=RegisterConfig(executor_type="headless"))
+            # 造一个带 reserved 标记的 identity，模拟 _reuse_existing_account 已占用
+            identity = SimpleNamespace(
+                identity_provider="mailbox",
+                email="stale1@gmail.com",
+                oauth_provider="",
+                chrome_user_data_dir="",
+                chrome_cdp_url="",
+                metadata={},
+                mailbox_account=SimpleNamespace(extra={"google_pool_reserved_email": "stale1@gmail.com"}),
+            )
+            with patch.object(platform, "_resolve_identity", return_value=identity), \
+                 patch("core.base_platform.BrowserRegistrationFlow") as flow_cls, \
+                 patch("core.google_account_pool.GoogleAccountPool", lambda: pool):
+                flow_cls.return_value.run.side_effect = RuntimeError("OAuth 半路失败")
+                with self.assertRaises(RuntimeError):
+                    platform.register(email="stale1@gmail.com", password="p")
+
+            # raise 前应已释放，reserved_platforms 清空
+            data = json.loads(pool_path.read_text(encoding="utf-8"))
+            self.assertNotIn("reserved_platforms", data["accounts"][0])
+
+    def test_register_raises_releases_via_mailbox_cached_account(self):
+        """_resolve_identity 在 acquire 后、返回前抛异常（identity 未赋值）时，
+        从 mailbox._account.extra 兜底读 reserved 邮箱释放。"""
+        import json
+        from unittest.mock import patch
+        from types import SimpleNamespace
+
+        from core.base_platform import RegisterConfig
+
+        with tempfile.TemporaryDirectory() as tmp:
+            pool_path = Path(tmp) / "google_accounts_pool.json"
+            self._write_pool(pool_path, [{
+                "email": "stale2@gmail.com",
+                "password": "pw",
+                "registered_platforms": [],
+                "reserved_platforms": ["tryblend"],
+                "status": "valid",
+            }])
+            pool = self._pool_with_reserved(pool_path)
+
+            platform = TryBlendPlatform(config=RegisterConfig(executor_type="headless"))
+            # _resolve_identity 自己抛（identity 拿不到），但 mailbox._account 已缓存 reserved
+            cached_account = SimpleNamespace(extra={"google_pool_reserved_email": "stale2@gmail.com"})
+            mailbox = SimpleNamespace(_account=cached_account)
+            platform.mailbox = mailbox
+            with patch.object(platform, "_resolve_identity", side_effect=RuntimeError("resolve 失败")), \
+                 patch("core.google_account_pool.GoogleAccountPool", lambda: pool):
+                with self.assertRaises(RuntimeError):
+                    platform.register(email="stale2@gmail.com", password="p")
+
+            data = json.loads(pool_path.read_text(encoding="utf-8"))
+            self.assertNotIn("reserved_platforms", data["accounts"][0])
+
+    def test_release_stale_clears_residual_locks(self):
+        """release_stale 清理 reserved 含但 registered 不含的陈旧锁，registered 中的平台不动。"""
+        import json
+
+        with tempfile.TemporaryDirectory() as tmp:
+            pool_path = Path(tmp) / "google_accounts_pool.json"
+            self._write_pool(pool_path, [
+                {"email": "a@gmail.com", "password": "pw", "registered_platforms": [], "reserved_platforms": ["vellum"], "status": "valid"},
+                {"email": "b@gmail.com", "password": "pw", "registered_platforms": ["vellum"], "reserved_platforms": ["vellum"], "status": "valid"},
+                {"email": "c@gmail.com", "password": "pw", "registered_platforms": ["anycap"], "reserved_platforms": ["anycap"], "status": "valid"},
+                {"email": "invalid@gmail.com", "password": "pw", "registered_platforms": [], "reserved_platforms": ["vellum"], "status": "invalid"},
+            ])
+            pool = self._pool_with_reserved(pool_path)
+
+            stale = pool.release_stale(platform="")
+            affected_emails = {email for email, _ in stale}
+            # 只有 a 是陈旧锁（reserved vellum 但 registered 空）；b/c registered 已含不陈旧；invalid 跳过
+            self.assertEqual(affected_emails, {"a@gmail.com"})
+            data = json.loads(pool_path.read_text(encoding="utf-8"))
+            by_email = {a["email"]: a for a in data["accounts"]}
+            self.assertNotIn("reserved_platforms", by_email["a@gmail.com"])
+            self.assertEqual(by_email["b@gmail.com"].get("reserved_platforms"), ["vellum"])
+            self.assertEqual(by_email["c@gmail.com"].get("reserved_platforms"), ["anycap"])
+
+    def test_release_stale_filters_by_platform(self):
+        """release_stale(platform='vellum') 只清 vellum 陈旧锁，不动其他平台。"""
+        import json
+
+        with tempfile.TemporaryDirectory() as tmp:
+            pool_path = Path(tmp) / "google_accounts_pool.json"
+            self._write_pool(pool_path, [
+                {"email": "a@gmail.com", "password": "pw", "registered_platforms": [], "reserved_platforms": ["vellum", "anycap"], "status": "valid"},
+            ])
+            pool = self._pool_with_reserved(pool_path)
+
+            stale = pool.release_stale(platform="vellum")
+            self.assertEqual(stale, [("a@gmail.com", ["vellum"])])
+            data = json.loads(pool_path.read_text(encoding="utf-8"))
+            # vellum 清了，anycap 保留
+            self.assertEqual(data["accounts"][0].get("reserved_platforms"), ["anycap"])
+
 
 if __name__ == '__main__':
     unittest.main()

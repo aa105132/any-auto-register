@@ -156,7 +156,13 @@ class MailboxInventoryRepository:
                 select(MailboxInventoryModel)
                 .where(MailboxInventoryModel.provider_key == normalized_provider)
                 .where(MailboxInventoryModel.status == "unused")
-                .order_by(MailboxInventoryModel.id.asc())
+                # 失败降权排序：fail_count 少的优先，同 fail_count 时 last_failed_at 早的优先
+                # （最近没失败的 / 失败过但等最久的先领），最后 id 兜底稳定序。
+                .order_by(
+                    MailboxInventoryModel.fail_count.asc(),
+                    MailboxInventoryModel.last_failed_at.asc(),
+                    MailboxInventoryModel.id.asc(),
+                )
             ).all()
             now = _utcnow()
             serialized: list[dict[str, Any]] = []
@@ -194,6 +200,7 @@ class MailboxInventoryRepository:
         task_id: str | None = None,
         platform: str | None = None,
         metadata_updates: dict[str, Any] | None = None,
+        bump_fail: bool = False,
     ) -> dict[str, Any] | None:
         normalized_id = int(item_id or 0)
         if normalized_id <= 0:
@@ -216,6 +223,10 @@ class MailboxInventoryRepository:
                 item.last_task_id = str(task_id or "")
             if platform is not None:
                 item.last_platform = str(platform or "")
+            if bump_fail:
+                # 失败降权：累加 fail_count + 记最近失败时间，claim_available 排序时失败少/早的优先
+                item.fail_count = int(item.fail_count or 0) + 1
+                item.last_failed_at = _utcnow()
             if metadata_updates:
                 metadata.update(metadata_updates)
             item.set_metadata(metadata)
@@ -252,6 +263,9 @@ class MailboxInventoryRepository:
             item.last_error = ""
             item.status = str(result.get("status") or item.status or "unused")
             item.note = str(result.get("note") or item.note or "")
+            # 注册成功清零失败计数，让该邮箱重新回到队首优先级
+            item.fail_count = 0
+            item.last_failed_at = None
             item.updated_at = _utcnow()
             session.add(item)
             session.commit()
@@ -290,6 +304,10 @@ class MailboxInventoryRepository:
             item.last_error = str(error or "")
             item.last_task_id = str(task_id or "")
             item.last_platform = str(platform or "")
+            # 超时也算一次失败：累加 fail_count + 记最近失败时间（outlook 超时仍回收 unused，
+            # 但失败计数让下次领号降权）
+            item.fail_count = int(item.fail_count or 0) + 1
+            item.last_failed_at = _utcnow()
             item.updated_at = _utcnow()
             session.add(item)
             session.commit()
@@ -309,6 +327,9 @@ class MailboxInventoryRepository:
             for item in items:
                 item.status = "unused"
                 item.last_error = ""
+                # 手动重置清零失败计数，让邮箱回到最高优先级
+                item.fail_count = 0
+                item.last_failed_at = None
                 if note:
                     item.note = note
                 item.updated_at = now
@@ -371,6 +392,8 @@ class MailboxInventoryRepository:
             "last_task_id": item.last_task_id,
             "last_platform": item.last_platform,
             "metadata": item.get_metadata(),
+            "fail_count": int(item.fail_count or 0),
+            "last_failed_at": item.last_failed_at.isoformat() if item.last_failed_at else None,
             "created_at": item.created_at.isoformat() if item.created_at else None,
             "updated_at": item.updated_at.isoformat() if item.updated_at else None,
         }

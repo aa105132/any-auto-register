@@ -27,7 +27,7 @@ const TaskLogPanel = lazy(async () => {
   return { default: mod.TaskLogPanel }
 })
 
-const TWOAPI_PUSH_PLATFORMS = new Set(['thesys'])
+const TWOAPI_PUSH_PLATFORMS = new Set(['thesys', 'kombai', 'runbear', 'hex', 'clickup', 'promptql'])
 
 const FALLBACK_PLATFORMS = [
   { name: 'chatgpt', display_name: 'ChatGPT' },
@@ -39,6 +39,11 @@ const FALLBACK_PLATFORMS = [
   { name: 'trae', display_name: 'Trae.ai' },
   { name: 'atxp', display_name: 'ATXP' },
   { name: 'venice', display_name: 'Venice' },
+  { name: 'kombai', display_name: 'Kombai' },
+  { name: 'runbear', display_name: 'Runbear' },
+  { name: 'hex', display_name: 'Hex' },
+  { name: 'clickup', display_name: 'ClickUp' },
+  { name: 'promptql', display_name: 'PromptQL' },
 ]
 
 const DEFAULT_FORM: Record<string, any> = {
@@ -76,6 +81,7 @@ const DEFAULT_FORM: Record<string, any> = {
   solver_url: 'http://localhost:8889',
   venice_expected_credits: 500,
   venice_api_key_description: 'seedance-auto',
+  vercel_inline_bindkey: true,
   twoapi_push_mode: 'none',
   twoapi_push_target_url: '',
 }
@@ -543,6 +549,9 @@ export default function Register() {
     }
     if (form.platform === 'atxp') {
       extra.enable_clowdbot = Boolean(form.enable_clowdbot)
+    }
+    if (form.platform === 'vercel') {
+      extra.vercel_inline_bindkey = Boolean(form.vercel_inline_bindkey)
     }
     const res = await apiFetch('/tasks/register', {
       method: 'POST',
@@ -1125,6 +1134,21 @@ export default function Register() {
                           className="accent-[var(--color-accent)] h-4 w-4 rounded"
                         />
                         <span className="text-sm text-[var(--color-text)]">启用 Clowdbot 辅助处理验证码</span>
+                      </label>
+                    </div>
+                  )}
+
+                  {form.platform === 'vercel' && (
+                    <div className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-3">
+                      <div className="workspace-kicker">Vercel 绑卡</div>
+                      <label className="mt-2 inline-flex cursor-pointer select-none items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={!!form.vercel_inline_bindkey}
+                          onChange={e => set('vercel_inline_bindkey', e.target.checked)}
+                          className="accent-[var(--color-accent)] h-4 w-4 rounded"
+                        />
+                        <span className="text-sm text-[var(--color-text)]">注册时直接绑卡+建 API Key（关闭则只提交审核工单，审核通过后手动补绑卡）</span>
                       </label>
                     </div>
                   )}

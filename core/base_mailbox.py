@@ -1668,7 +1668,15 @@ class YydsMailMailbox(BaseMailbox):
         self.api = _normalize_api_base_url(api_base_url, default="https://maliapi.215.im", label="YYDS Mail API URL")
         self._api_key = str(api_key or "").strip()
         self._prefix = str(prefix or "").strip()
-        self._domain = str(domain or "").strip()
+        # 支持多域名轮转：domain 含逗号时视为域名池，每个 mailbox 实例随机选一个。
+        # 单任务批量注册时每账号新建一个 mailbox 实例，从而自然分散到多域名，降低单域名风控。
+        _raw_domain = str(domain or "").strip()
+        if "," in _raw_domain:
+            import random as _rng
+            _domain_list = [d.strip() for d in _raw_domain.split(",") if d.strip()]
+            self._domain = _rng.choice(_domain_list) if _domain_list else ""
+        else:
+            self._domain = _raw_domain
         self._email = str(email or "").strip()
         self._mailbox_token = ""
         self.proxy = {"http": proxy, "https": proxy} if proxy else None

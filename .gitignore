@@ -126,4 +126,86 @@ scripts/test_portal_url.py
 scripts/_vellum_*
 # Windows 误生成的垃圾文件
 frontend/nul
+nul
+
+# 敏感凭证与本地油猴脚本（绝不能提交）
+*邮箱登录.txt
+信用卡.txt
+
+# 浏览器用户数据目录（含 profile/缓存，体积大）
+userdir_*/
+
+# Vercel API key 明文与凭证
+scripts/_vck_*.txt
+scripts/_vcp_*.txt
+scripts/vercel_vck_keys_*.txt
+
+# Vercel 批量注册结果/进度/dump 数据
+scripts/_vercel_batch_result_*.json
+scripts/_vercel_*.json
+scripts/_vercel_*.txt
+scripts/_vercel_*.csv
+scripts/_vercel_*.html
+scripts/_vercel_*.lock
+scripts/_vercel_*.pid
+scripts/_vercel_*.py
+scripts/_vercel_*/
+
+# Vercel 一次性硬编码诊断/数据导入脚本（含账号/卡号，无通用复用入口）
+scripts/vercel_register_*.py
+scripts/vercel_loop_resin_ips.py
+scripts/vercel_login_bindcard.py
+scripts/vercel_fillcard.py
+scripts/vercel_addcard.py
+scripts/vercel_aigateway_createkey.py
+scripts/vercel_appeal_bindkey.py
+scripts/vercel_batch_all.py
+scripts/vercel_batch_cfworker.py
+scripts/vercel_batch_register*.py
+
+# AnyCap 注册结果/协议流量 dump
+scripts/_anycap_*.json
+
+# Google Workspace 批量建号一次性脚本与结果（含 admin token/密码/账号）
+scripts/_google_workspace_*.py
+scripts/_google_workspace_*.json
+scripts/_google_admin_*.json
+scripts/_google_admin_*.csv
+scripts/_google_admin_*.py
+scripts/google_admin_bulk_vellum.py
+scripts/_noahhughes_*
+
+# PromptQL 端点验证一次性脚本与结果
+scripts/_pql_*
+
+# 诊断脚本与 HTML dump
+scripts/_diag_*
+scripts/diag_*.py
+scripts/_debug_*
+snap_*.yml
+
+# 五平台一次性 e2e/抓包验证工作流
+scripts/_wf_*
+
+# scripts/ 下一次性 test_ 脚本（tests/ 正式测试不受影响）
+scripts/test_*.py
+
+# ClickUp 逆向取证产物
+scripts/_clickup_rev/
+
+# Kombai VSCode 插件包（19.9MB）与逆向 bundle
+scripts/_kombai.vsix
+scripts/_kombai_vsix/
+scripts/_kombai_signup_bundle.js
+
+# appeal 预扫描 / onboarding dump 一次性脚本
+scripts/_appeal_prescan.py
+scripts/_dump_onboard.py
+
+# 临时脚本与等待脚本
+scripts/_tmp_*
+
+# 后端/2API 错误日志
+scripts/_twoapi_server.err
+scripts/_vercel_backend.err
 

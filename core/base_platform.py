@@ -43,6 +43,7 @@ def make_google_oauth_stop_when(token: "CancelToken | None", existing: Callable[
 
 class AccountStatus(str, Enum):
     REGISTERED   = "registered"
+    PENDING      = "pending"       # 注册流程已提交但待外部审核/人工处理（如 Vercel appeal 工单待 4-8h 审核）
     TRIAL        = "trial"
     SUBSCRIBED   = "subscribed"
     EXPIRED      = "expired"
@@ -370,6 +371,15 @@ class BasePlatform(ABC):
         if not actual_identity:
             return account
         extra = dict(account.extra or {})
+        # 透传 Google 账号池复用占用的邮箱，供外层任务在注册失败时 release。
+        # _reuse_existing_account 把它写进 mailbox_account.extra，但平台 _map_result
+        # 重写 extra 时会丢弃该字段，导致 tasks.py 读不到、失败时无法释放 reserved_platforms，
+        # 自动取号模式下 reserved 永久残留、最终把可用账号耗光。
+        mailbox_account = getattr(actual_identity, "mailbox_account", None)
+        if mailbox_account:
+            reserved_email = str((getattr(mailbox_account, "extra", {}) or {}).get("google_pool_reserved_email") or "").strip()
+            if reserved_email:
+                extra["google_pool_reserved_email"] = reserved_email
         identity_snapshot = self._build_identity_snapshot(actual_identity)
         extra["identity"] = _json_safe(identity_snapshot)
         if identity_snapshot.get("mailbox"):

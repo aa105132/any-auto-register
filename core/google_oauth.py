@@ -300,6 +300,38 @@ def _mark_google_account_invalid(email: str, *, reason: str, log_fn: Callable[[s
         log_fn(f"[GoogleOAuth] 标记 Google 账号失效失败: {normalized_email} ({exc})")
         return False
 
+
+# 手机验证挑战（challenge/iap）页面检测——Google 要求绑定手机号才能继续，
+# 无手机号的 Workspace / Gmail 账号无法通过此挑战。
+_PHONE_CHALLENGE_URL_HINTS = ("challenge/iap", "challenge/az", "challenge/kts")
+_PHONE_CHALLENGE_BODY_HINTS = (
+    "Enter a phone number",
+    "输入电话号码",
+    "输入您的电话号码",
+    "Add a recovery phone",
+    "添加恢复电话",
+    "verify it's you",
+    "确认是您本人",
+    "确认您的身份",
+    "get a text message",
+    "接收短信",
+    "phone number to get a text",
+    "phone number to verify",
+)
+
+
+def _is_phone_challenge_page(url: str, body: str) -> bool:
+    """检测 Google 手机验证挑战页（challenge/iap 等）。
+
+    URL 含 challenge/iap 且 body 含手机验证相关提示词即判定为手机验证页。
+    与 TOTP 2FA（challenge/totp）和密码页（challenge/pwd）互斥。
+    """
+    url = str(url or "")
+    body = str(body or "")
+    if not any(hint in url for hint in _PHONE_CHALLENGE_URL_HINTS):
+        return False
+    return any(hint in body for hint in _PHONE_CHALLENGE_BODY_HINTS)
+
 def _click_text_or_prompt(page, labels: tuple[str, ...] = GOOGLE_CONSENT_LABELS) -> str:
     """点击 Google 页面上的继续/允许/条款确认类按钮。
 
@@ -790,6 +822,17 @@ def drive_google_oauth(
                 time.sleep(1)
                 continue
 
+            # 手机验证挑战（challenge/iap）——Google 要求绑定手机号才能继续，
+            # 无手机号的账号无法通过，拉黑并终止。
+            if _is_phone_challenge_page(url, body):
+                result.blocked_on_password = True
+                _mark_google_account_invalid(email, reason="google_phone_challenge", log_fn=log_fn)
+                log_fn(f"[GoogleOAuth] Google 要求手机验证（challenge/iap），账号无手机号，已拉黑: {email}")
+                raise RuntimeError(
+                    f"Google OAuth 手机验证挑战，账号已拉黑: "
+                    f"{email or 'unknown'} :: url={url[:120]}"
+                )
+
             # 3) Account chooser with a different cached Chrome profile account is
             # not a consent page. Keep forcing "Use another account" and never
             # click Continue/Allow for authuser=0 unless the expected email was
@@ -800,6 +843,23 @@ def drive_google_oauth(
                     continue
                 result.blocked_on_password = True
                 log_fn(f"[GoogleOAuth] 账号选择器未出现目标邮箱，拒绝授权旧账号: expected={email}")
+                time.sleep(1)
+                continue
+
+            # 4a) Google 在 consent 后偶尔跳回 signin/oauth/id 或 accountchooser 要求
+            # 再确认账号（authuser=0）。此时 email_submitted 已为 True，下面 5) 分支
+            # 会因 `not result.email_submitted` 跳过，导致账号确认页无人点击、driver
+            # 空转到 timeout。这里解除该限制：精确点目标邮箱账号行继续；找不到目标行
+            # 且邮箱尚未提交时才退而点 "Use another account"；都失败则打诊断日志并
+            # 跳过本轮后续 consent/chooser 误点，下一轮重试。
+            if email and ("signin/oauth/id" in url or "signin/oauth/accountchooser" in url or "accountchooser" in url):
+                if _click_google_account_row_precisely(page, email=email, log_fn=log_fn):
+                    progressed = True
+                    continue
+                if not result.email_submitted and _click_account_or_other(browser, email=email, log_fn=log_fn):
+                    progressed = True
+                    continue
+                log_fn(f"[GoogleOAuth] 账号确认页未找到目标邮箱行: url={str(url)[:80]} body={body[:200]!r}")
                 time.sleep(1)
                 continue
 

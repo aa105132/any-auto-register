@@ -16,8 +16,9 @@ function usePlatformActions(platform: string): PlatformAction[] {
 
   useEffect(() => {
     if (cachedActions?.[platform]) { setActions(cachedActions[platform]); return }
-    apiFetch(`/platforms/${platform}/actions`).then((data) => {
-      const list = Array.isArray(data) ? data : []
+    apiFetch(`/actions/${platform}`).then((data) => {
+      // 后端 list_actions 返回 { actions: [...] }，兼容裸数组
+      const list = Array.isArray(data) ? data : (Array.isArray(data?.actions) ? data.actions : [])
       cachedActions = { ...(cachedActions || {}), [platform]: list }
       setActions(list)
     }).catch(() => {})
@@ -42,11 +43,17 @@ export function BatchActionMenu({
   const runAction = async (action: PlatformAction) => {
     setLoading(action.id)
     try {
-      const body: any = { platform, action_id: action.id }
-      if (selectedIds.length > 0) body.account_ids = selectedIds
-      if (statusFilter) body.status = statusFilter
-      if (searchFilter) body.search = searchFilter
-      const res = await apiFetch('/accounts/batch-action', { method: 'POST', body: JSON.stringify(body) })
+      // 后端契约：POST /api/actions/{platform}/batch/{action_id}
+      // body = BatchActionRequest { ids, select_all, status_filter, search_filter, params }
+      const body: any = { params: {} }
+      if (selectedIds.length > 0) {
+        body.ids = selectedIds
+      } else {
+        body.select_all = true
+        if (statusFilter) body.status_filter = statusFilter
+        if (searchFilter) body.search_filter = searchFilter
+      }
+      const res = await apiFetch(`/actions/${platform}/batch/${action.id}`, { method: 'POST', body: JSON.stringify(body) })
       onTaskCreated(res.task_id, `批量 ${action.label}`, action.id)
     } finally { setLoading(null) }
   }

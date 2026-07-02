@@ -172,7 +172,7 @@ class EnterBrowserRegistrar:
             "input[aria-label*='code' i]",
         ]
         password_entered = False
-        otp_entered = False
+        otp_submitted_count = 0
         deadline = time.time() + max(90, self._timeout)
         while time.time() < deadline:
             auth_code = _parse_auth_code_from_url(page.url)
@@ -193,12 +193,17 @@ class EnterBrowserRegistrar:
                 page.wait_for_timeout(1500)
                 continue
 
+            # AnyCap/Auth0 注册可能有多步 OTP（首次邮箱验证 + 登录/设备验证）。
+            # 旧逻辑用 otp_entered 单次标志，第二次 OTP 输入框出现后不再填码，
+            # 导致 120s 等不到 auth_code timeout。改成每次出现新 OTP 输入框都
+            # 重新收码填入：wait_for_code 的 before_ids 已排除已读邮件，不会读到旧码。
             otp_input = self._first_visible_locator(page, otp_selectors)
-            if otp_input and not otp_entered:
+            if otp_input:
                 if not self._otp_callback:
                     self._l("OTP input found but no OTP callback configured")
                     return None
-                self._l("OTP input found, getting code from mailbox...")
+                otp_submitted_count += 1
+                self._l(f"OTP input found (step {otp_submitted_count}), getting code from mailbox...")
                 otp = self._otp_callback()
                 if not otp:
                     self._l("OTP callback returned empty code")
@@ -207,7 +212,6 @@ class EnterBrowserRegistrar:
                 otp_input.fill(otp)
                 page.wait_for_timeout(800)
                 self._click_submit_no_wait(page)
-                otp_entered = True
                 page.wait_for_timeout(2000)
                 continue
 
@@ -529,10 +533,24 @@ class EnterBrowserRegistrar:
 
         profile_dir = meta.get("profile_dir")
         if self._cleanup_profile_dir and profile_dir is not None and profile_dir.exists():
-            try:
-                shutil.rmtree(profile_dir, ignore_errors=True)
-            except Exception:
-                pass
+            # Chrome 子进程可能仍占着 profile 文件锁（SQLite/GPU cache），
+            # taskkill /T 后需等文件锁释放再删。ignore_errors=True 会静默失败
+            # 导致 profile 堆积（每个 80-100MB，几十个就占数 GB）。这里改成
+            # 带重试的删除：先等 1.5s，删失败再等 2s 重试，最后兜底 onerror 强删。
+            removed = False
+            for attempt in range(3):
+                try:
+                    shutil.rmtree(profile_dir, ignore_errors=False)
+                    removed = True
+                    break
+                except Exception:
+                    time.sleep(1.5 if attempt == 0 else 2.0)
+            if not removed:
+                try:
+                    # 兜底：忽略错误强删（保留旧静默行为，至少尽力清一部分）
+                    shutil.rmtree(profile_dir, ignore_errors=True)
+                except Exception:
+                    pass
 
     def _resolve_chrome_path(self) -> str:
         if self._chrome_path and Path(self._chrome_path).exists():

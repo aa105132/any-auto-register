@@ -233,6 +233,11 @@ class MailboxInventoryModel(SQLModel, table=True):
     last_task_id: str = Field(default="", index=True)
     last_platform: str = Field(default="", index=True)
     metadata_json: str = "{}"
+    # 失败降权：fail_count 累加失败次数，last_failed_at 记最近失败时间。claim_available
+    # 按 fail_count asc、last_failed_at asc、id asc 排序，失败少/失败早的优先领。
+    # 注册成功/reset_many 清零。曾因 git 回归丢失，2026-06-26 加回。
+    fail_count: int = Field(default=0)
+    last_failed_at: Optional[datetime] = Field(default=None, nullable=True)
     created_at: datetime = Field(default_factory=_utcnow)
     updated_at: datetime = Field(default_factory=_utcnow)
 

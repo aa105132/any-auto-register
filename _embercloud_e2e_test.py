@@ -83,7 +83,7 @@ def _claim_outlook_seed() -> dict[str, Any]:
     }
 
 
-def _release_inventory(inventory_id: int, *, bump_fail: bool = False, last_error: str = "") -> None:
+def _release_inventory(inventory_id: int, *, last_error: str = "") -> None:
     """把领到的邮箱槽位释放回 unused，避免失败时永久占用。"""
     if not inventory_id:
         return
@@ -93,7 +93,6 @@ def _release_inventory(inventory_id: int, *, bump_fail: bool = False, last_error
         inventory_id,
         status="unused",
         last_error=last_error or None,
-        bump_fail=bump_fail,
     )
 
 
@@ -131,7 +130,9 @@ def _verify_chat(api_key: str) -> dict[str, Any]:
             "Accept": "application/json",
         },
         json={
-            "model": "gpt-4.1-mini",
+            # EmberCloud 实际可用模型由 /v1/models 返回（glm-5.2 等），
+            # gpt-4.1-mini 不存在会 400 invalid_request_error。
+            "model": "glm-5.2",
             "messages": [{"role": "user", "content": "Say only the word pong."}],
             "max_tokens": 16,
             "stream": False,
@@ -181,7 +182,7 @@ def main() -> int:
             break  # 成功
         except Exception as exc:
             print(f"  FAIL: register 抛异常: {type(exc).__name__}: {exc}")
-            _release_inventory(seed.get("inventory_id", 0), bump_fail=True, last_error=str(exc)[:200])
+            _release_inventory(seed.get("inventory_id", 0), last_error=str(exc)[:200])
             if _is_email_taken_error(exc) and attempt < max_attempts:
                 print("  邮箱已被占用，自动换号重试...")
                 continue
@@ -208,7 +209,7 @@ def main() -> int:
     print(f"  {models['status']} ok={models['ok']} body={models['body_head'][:200]}")
     if not models["ok"]:
         print("FAIL: /v1/models 不通")
-        _release_inventory(seed.get("inventory_id", 0), bump_fail=True, last_error="models verify failed")
+        _release_inventory(seed.get("inventory_id", 0), last_error="models verify failed")
         return 1
 
     print("=" * 60)
@@ -220,7 +221,7 @@ def main() -> int:
         print(f"  answer: {chat['answer']!r}")
     if chat["status"] != 200:
         print(f"\nFAIL: chat 返回 {chat['status']}")
-        _release_inventory(seed.get("inventory_id", 0), bump_fail=True, last_error=f"chat {chat['status']}")
+        _release_inventory(seed.get("inventory_id", 0), last_error=f"chat {chat['status']}")
         return 1
 
     # 全链路通过：把邮箱槽位标成功

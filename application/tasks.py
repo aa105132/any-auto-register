@@ -2857,11 +2857,13 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
             else:
                 resin_proxy, resin_ip = None, ""
                 max_resin_attempts = 8 if platform_name in {"swarms", "lemondata"} else 1
+                # AnyCap 走 resin 每号不同 session IP（vs{index}），避免同 IP 触发 "too many signup attempts"。
+                if platform_name == "anycap":
+                    max_resin_attempts = max(max_resin_attempts, 6)
                 resin_ip_probe_failures = 0
                 for attempt in range(max_resin_attempts):
-                    # Swarms 对同一 Resin 会话/IP 限制明显；无论是否并发都使用独立 session 用户名 Default.vsN，
-                    # 并在注册前直连目标注册页预检，避免 api.ipify 可用但 swarms.world CONNECT 504。
-                    resin_account = f"vs{worker_index + attempt}" if platform_name in {"swarms", "lemondata"} else ""
+                    # Swarms/AnyCap 对同一 Resin 会话/IP 限制明显；用独立 session 用户名 Default.vsN 派不同出口 IP。
+                    resin_account = f"vs{worker_index + attempt}" if platform_name in {"swarms", "lemondata", "anycap"} else ""
                     candidate_proxy = _get_resin_proxy_url(platform_name, account=resin_account)
                     candidate_ip = _probe_proxy_ip(candidate_proxy) if candidate_proxy else ""
                     if candidate_proxy and not candidate_ip:
@@ -3079,6 +3081,13 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
                 max_proxy_attempts = max(1, int(extra.get("lemondata_proxy_retry_attempts") or extra.get("proxy_retry_attempts") or 8))
             except Exception:
                 max_proxy_attempts = 8
+        elif platform_name == "anycap":
+            # AnyCap "Too many signup attempts" 是 IP 维度风控，换 resin session/IP 重试同一邮箱。
+            # 默认 6 次（resin 多 session 轮换），可经 extra.anycap_proxy_retry_attempts 覆盖。
+            try:
+                max_proxy_attempts = max(1, int(extra.get("anycap_proxy_retry_attempts") or extra.get("proxy_retry_attempts") or 6))
+            except Exception:
+                max_proxy_attempts = 6
         for proxy_attempt in range(1, max_proxy_attempts + 1):
             resolved_proxy, proxy_source, resin_ip = None, "", ""
             try:
@@ -3184,6 +3193,19 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
                     and _is_airouter_retryable_proxy_error(error)
                     and proxy_attempt < max_proxy_attempts
                 )
+                # AnyCap "Too many signup attempts" 是 IP 维度风控，换 resin session/IP 重试同一邮箱，不拉黑邮箱。
+                anycap_retryable_rate_limit = (
+                    platform_name == "anycap"
+                    and type(exc).__name__ == "AnyCapSignupRateLimited"
+                    and proxy_attempt < max_proxy_attempts
+                )
+                if anycap_retryable_rate_limit:
+                    logger.log(
+                        f"AnyCap IP 频率风控，换 resin IP 重试 {proxy_attempt + 1}/{max_proxy_attempts}: {error}",
+                        level="warning",
+                    )
+                    time.sleep(min(5, 1 + proxy_attempt))
+                    continue
                 if airouter_retryable_proxy_error:
                     if resin_ip:
                         _release_airouter_ip(resin_ip)
@@ -3234,7 +3256,27 @@ def _execute_register_task(payload: dict[str, Any], logger: TaskLogger) -> None:
                 # 并发注册时异常对象可能携带其它 worker 的结果/邮箱；失败归档必须优先使用当前 worker 的邮箱。
                 persist_email = str(email or "").strip() or str(getattr(result, "email", "") or "").strip()
                 reserved_google_email = str(extra.get("_reserved_google_pool_email") or persist_email or "").strip()
-                if reserved_google_email and str(extra.get("oauth_account_source") or "").strip().lower() in {"mailbox", "mail_provider", "provider"}:
+                # 自动取号失败时 _reserved_google_pool_email 未写、persist_email 多为空，
+                # 回溯 mailbox 实例缓存的 _account.extra 兜底取 reserved 邮箱，避免 release 被跳过。
+                # mailbox 是 _build_platform_instance 的局部变量，_do_one 作用域不可见（曾因裸引用 mailbox
+                # 抛 NameError 掩盖原始注册异常，导致 vellum oauth_browser 批量失败"name 'mailbox' is not defined"）；
+                # 这里从 platform 实例取 mailbox（platform 在 register 抛异常时已定义），并用 locals() 保护
+                # _build_platform_instance 自身抛异常的边缘情况。
+                if not reserved_google_email:
+                    _mb = getattr(platform, "mailbox", None) if "platform" in locals() else None
+                    if _mb:
+                        cached_account = getattr(_mb, "_account", None)
+                        if cached_account:
+                            reserved_google_email = str((getattr(cached_account, "extra", {}) or {}).get("google_pool_reserved_email") or "").strip()
+                # guard 必须与 :2391 创建 mailbox 的条件对齐：identity_provider=="mailbox"
+                # 或 oauth_account_source in mailbox 族，任一命中即说明本次占用了 Google 池号，需释放。
+                # identity_provider 是 _build_platform_instance 的局部变量（2380），_do_one 不可见，
+                # 从 extra 反推（与 _get_identity_provider_name 同源逻辑）。
+                from core.base_identity import normalize_identity_provider
+                _idp = normalize_identity_provider(extra.get("identity_provider", "mailbox"))
+                oauth_source = str(extra.get("oauth_account_source") or "").strip().lower()
+                used_google_pool = _idp == "mailbox" or oauth_source in {"mailbox", "mail_provider", "provider"}
+                if reserved_google_email and used_google_pool:
                     try:
                         from core.google_account_pool import GoogleAccountPool
                         GoogleAccountPool().release(reserved_google_email, platform_name)

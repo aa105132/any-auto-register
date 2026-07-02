@@ -8,7 +8,12 @@ from typing import Any
 
 from services.twoapi.key_store import TwoAPIKeyStore
 from services.twoapi.models import TwoAPISettings, mask_secret
+from services.twoapi.plugins.kombai import KombaiTwoAPIPlugin
+from services.twoapi.plugins.promptql import PromptQLTwoAPIPlugin
+from services.twoapi.plugins.runbear import RunbearTwoAPIPlugin
 from services.twoapi.plugins.thesys import ThesysTwoAPIPlugin
+from services.twoapi.plugins.clickup import ClickUpTwoAPIPlugin
+from services.twoapi.plugins.hex import HexTwoAPIPlugin
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DATA_DIR = ROOT / "output"
@@ -22,6 +27,11 @@ COMMON_PLUGIN_SETTING_KEYS = (
 )
 PLUGIN_SETTING_KEYS: dict[str, tuple[str, ...]] = {
     "thesys": COMMON_PLUGIN_SETTING_KEYS,
+    "kombai": COMMON_PLUGIN_SETTING_KEYS,
+    "runbear": COMMON_PLUGIN_SETTING_KEYS,
+    "clickup": COMMON_PLUGIN_SETTING_KEYS,
+    "promptql": COMMON_PLUGIN_SETTING_KEYS,
+    "hex": COMMON_PLUGIN_SETTING_KEYS,
 }
 
 
@@ -35,6 +45,11 @@ class TwoAPIManager:
         self.plugin_settings = self._load_plugin_settings()
         self.plugins = {
             "thesys": ThesysTwoAPIPlugin(settings=self.get_plugin_settings("thesys"), data_dir=self.data_dir),
+            "kombai": KombaiTwoAPIPlugin(settings=self.get_plugin_settings("kombai"), data_dir=self.data_dir),
+            "runbear": RunbearTwoAPIPlugin(settings=self.get_plugin_settings("runbear"), data_dir=self.data_dir),
+            "clickup": ClickUpTwoAPIPlugin(settings=self.get_plugin_settings("clickup"), data_dir=self.data_dir),
+            "promptql": PromptQLTwoAPIPlugin(settings=self.get_plugin_settings("promptql"), data_dir=self.data_dir),
+            "hex": HexTwoAPIPlugin(settings=self.get_plugin_settings("hex"), data_dir=self.data_dir),
         }
         self._keepalive_thread: threading.Thread | None = None
         self._keepalive_stop = threading.Event()
@@ -72,7 +87,7 @@ class TwoAPIManager:
         raw = self._load_settings_payload()
         plugins_raw = raw.get("plugins") if isinstance(raw.get("plugins"), dict) else {}
         result: dict[str, TwoAPISettings] = {}
-        for name in ("thesys",):
+        for name in ("thesys", "kombai", "runbear", "clickup", "promptql", "hex"):
             result[name] = self._settings_from_mapping(dict(plugins_raw.get(name) or {}), base=self.settings)
         return result
 
@@ -143,6 +158,11 @@ class TwoAPIManager:
             "listen": "http://127.0.0.1:6543/thesys/v1",
             "listen_urls": [
                 "http://127.0.0.1:6543/thesys/v1",
+                "http://127.0.0.1:6543/kombai/v1",
+                "http://127.0.0.1:6543/runbear/v1",
+                "http://127.0.0.1:6543/clickup/v1",
+                "http://127.0.0.1:6543/promptql/v1",
+                "http://127.0.0.1:6543/hex/v1",
             ],
             "settings": self.settings.__dict__,
             "plugin_settings": {name: self.serialize_plugin_settings(name) for name in sorted(self.plugin_settings)},

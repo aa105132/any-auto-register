@@ -293,17 +293,37 @@ class EmberCloudPluginTests(unittest.TestCase):
         self.assertEqual(captured["provider"], "outlook_token")
         self.assertEqual(captured["extra"]["mail_provider"], "outlook_token")
 
-    def test_protocol_mailbox_adapter_uses_browser_registrar(self):
+    def test_protocol_mailbox_adapter_uses_protocol_worker_with_local_solver(self):
         from core.registration import ProtocolMailboxAdapter
         from platforms.embercloud.plugin import EmberCloudPlatform
+        from platforms.embercloud.protocol_mailbox import EmberCloudProtocolMailboxWorker
 
         adapter = EmberCloudPlatform().build_protocol_mailbox_adapter()
         self.assertIsInstance(adapter, ProtocolMailboxAdapter)
-        # Turnstile 在浏览器里由 Clerk 自动处理，不需要 captcha_solver。
-        self.assertFalse(adapter.use_captcha)
-        # OTP 规格保留（IMAP 收码填进浏览器）。
+        # 纯协议注册：Clerk sign_up + 本地 solver 解 Turnstile + 邮箱 OTP + 协议拿 key。
+        # 实测浏览器内 Clerk managed Turnstile 自动化过不了，改走纯协议 + captcha_solver。
+        self.assertTrue(adapter.use_captcha)
+        # 注册前自动拉起本地 Turnstile solver 服务（local_solver 模式需要）。
+        self.assertIsNotNone(adapter.preflight)
+        # local_solver 优先于远程打码（无需外部 API key）。
+        self.assertEqual(
+            EmberCloudPlatform.protocol_captcha_order,
+            ("local_solver", "yescaptcha", "2captcha"),
+        )
+        # OTP 规格保留（IMAP 收码，扫 INBOX + Junk）。
         self.assertEqual(adapter.otp_spec.code_pattern, r"(?<!\d)(\d{6})(?!\d)")
         self.assertEqual(adapter.otp_spec.keyword, "Ember")
+
+        # worker_builder 构造的是纯协议 worker（不是浏览器 registrar）。
+        class _Ctx:
+            class identity:
+                email = "x@y.com"
+            password = "pw"
+            proxy = None
+            extra = {}
+            log = lambda *a, **k: None
+        worker = adapter.worker_builder(_Ctx(), type("A", (), {"otp_callback": None})())
+        self.assertIsInstance(worker, EmberCloudProtocolMailboxWorker)
 
 
 if __name__ == "__main__":

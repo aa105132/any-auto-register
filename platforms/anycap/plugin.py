@@ -27,6 +27,44 @@ class AnyCapPlatform(BasePlatform):
     def _should_use_browser_registration_flow(self, identity) -> bool:
         return getattr(identity, "identity_provider", "") == "oauth_browser" and (self.config.executor_type or "") in ("headless", "headed", "cdp_protocol")
 
+    def _make_captcha(self, **kwargs):
+        # 按 executor_type 选打码 solver（与 build_protocol_mailbox_adapter 路径选择一致）：
+        # - 纯协议（protocol）：强制远程纯 HTTP 打码（YesCaptcha 带代理），零浏览器。打码平台
+        #   用同任务代理解题，token 与注册请求同出口 IP（参照 airouter._harvest_turnstile），
+        #   避免本机 IP 暴露 + IP 风控。
+        # - 浏览器（cdp_protocol/headless/headed）：用 _resolve_captcha_solver（默认 cdp_turnstile）
+        #   + anycap 专属 chrome/cdp 配置透传，solver 与注册浏览器用同一套 Chrome。
+        # extra[anycap_captcha_solver] 可显式指定（yescaptcha/2captcha/cdp_turnstile），覆盖默认。
+        extra = dict(self.config.extra or {})
+        requested = str(extra.get("anycap_captcha_solver") or "").strip().lower()
+        executor_type = str(self.config.executor_type or "").strip().lower()
+        force_protocol = str(extra.get("anycap_use_protocol", "") or "").strip().lower() in {"1", "true", "yes", "on"}
+        is_protocol_path = executor_type == "protocol" or force_protocol
+
+        # 显式指定优先
+        if requested in {"cdp", "cdp_turnstile", "cdp_protocol", "local_solver", "browser"}:
+            if not str(extra.get("chrome_path") or "").strip() and str(extra.get("anycap_chrome_path") or "").strip():
+                extra["chrome_path"] = extra["anycap_chrome_path"]
+            if not str(extra.get("chrome_cdp_url") or "").strip() and str(extra.get("anycap_cdp_url") or "").strip():
+                extra["chrome_cdp_url"] = extra["anycap_cdp_url"]
+            from core.base_captcha import create_captcha_solver
+            return create_captcha_solver("cdp_turnstile", extra)
+        if requested in {"yescaptcha", "yescaptcha_api", "2captcha", "twocaptcha", "twocaptcha_api"}:
+            from core.base_captcha import create_captcha_solver
+            return create_captcha_solver(requested, extra)
+
+        if is_protocol_path:
+            # 纯协议路径默认 yescaptcha（纯 HTTP 带代理），2captcha 兜底
+            from core.base_captcha import create_captcha_solver
+            return create_captcha_solver("yescaptcha", extra)
+        # 浏览器路径：用 _resolve_captcha_solver（cdp_protocol 默认 cdp_turnstile）+ chrome 配置透传
+        if not str(extra.get("chrome_path") or "").strip() and str(extra.get("anycap_chrome_path") or "").strip():
+            extra["chrome_path"] = extra["anycap_chrome_path"]
+        if not str(extra.get("chrome_cdp_url") or "").strip() and str(extra.get("anycap_cdp_url") or "").strip():
+            extra["chrome_cdp_url"] = extra["anycap_cdp_url"]
+        from core.base_captcha import create_captcha_solver
+        return create_captcha_solver(self._resolve_captcha_solver(), extra)
+
     def _resolve_google_password(self, ctx) -> str:
         mailbox_account = getattr(ctx.identity, "mailbox_account", None)
         mailbox_extra = dict(getattr(mailbox_account, "extra", {}) or {}) if mailbox_account else {}
@@ -85,30 +123,73 @@ class AnyCapPlatform(BasePlatform):
 
     def build_protocol_mailbox_adapter(self):
         extra = (self.config.extra if self.config else {}) or {}
+        # 按 executor_type 选路径（用户可选协议或浏览器，参照 airouter）：
+        # - protocol → 纯协议（AnyCapProtocolMailboxWorker，零浏览器，ProtocolExecutor=curl_cffi
+        #   + YesCaptcha 带代理解 Turnstile，全程树脂代理，打码 token 与注册同出口 IP）
+        # - cdp_protocol/headless/headed → 浏览器路径（AnyCapMailboxRegistrar，真实 Chrome CDP
+        #   驱动 Auth0 UI，打码 solver 注入 token，已修复 sync 隔离/already registered 早失败）
+        # extra[anycap_use_browser]=true 强制浏览器，extra[anycap_use_protocol]=true 强制纯协议。
+        executor_type = str(self.config.executor_type or "").strip().lower()
+        force_browser = str(extra.get("anycap_use_browser", "") or "").strip().lower() in {"1", "true", "yes", "on"}
+        force_protocol = str(extra.get("anycap_use_protocol", "") or "").strip().lower() in {"1", "true", "yes", "on"}
+        use_browser = force_browser or (executor_type in {"cdp_protocol", "headless", "headed"} and not force_protocol)
+
+        if use_browser:
+            # 浏览器路径（AnyCapMailboxRegistrar）
+            return ProtocolMailboxAdapter(
+                result_mapper=lambda ctx, result: self._map_result(result),
+                worker_builder=lambda ctx, artifacts: __import__(
+                    "platforms.anycap.browser_oauth",
+                    fromlist=["AnyCapMailboxRegistrar"],
+                ).AnyCapMailboxRegistrar(
+                    proxy=ctx.proxy,
+                    otp_callback=artifacts.otp_callback,
+                    timeout=resolve_timeout(ctx.extra, ("anycap_oauth_timeout", "browser_oauth_timeout", "mail_otp_timeout"), 240),
+                    chrome_path=str(extra.get("anycap_chrome_path", "") or ""),
+                    cdp_url=str(extra.get("anycap_cdp_url", "") or ""),
+                    log_fn=ctx.log,
+                    inventory_id=int((ctx.extra or {}).get("_inventory", {}).get("id", 0) or 0),
+                    captcha_solver=artifacts.captcha_solver,
+                ),
+                register_runner=lambda worker, ctx, artifacts: worker.run(
+                    email=ctx.identity.email,
+                    password=ctx.password or ctx.platform._make_random_password(),
+                ),
+                otp_spec=OtpSpec(
+                    keyword="Auth0",
+                    code_pattern=r"(?<!\d)(\d{6})(?!\d)",
+                    wait_message="Waiting for AnyCap/Auth0 email verification code...",
+                    success_label="AnyCap Auth0 OTP",
+                    timeout=resolve_timeout(extra, ("anycap_otp_timeout", "anycap_oauth_timeout", "mail_otp_timeout"), 180),
+                ),
+                use_captcha=True,
+            )
+        # 纯协议路径（零浏览器）：protocol executor → ProtocolExecutor + AnyCapProtocolRegister
         return ProtocolMailboxAdapter(
             result_mapper=lambda ctx, result: self._map_result(result),
             worker_builder=lambda ctx, artifacts: __import__(
-                "platforms.anycap.browser_oauth",
-                fromlist=["AnyCapMailboxRegistrar"],
-            ).AnyCapMailboxRegistrar(
+                "platforms.anycap.protocol_register",
+                fromlist=["AnyCapProtocolMailboxWorker"],
+            ).AnyCapProtocolMailboxWorker(
+                executor=artifacts.executor,
+                captcha=artifacts.captcha_solver,
                 proxy=ctx.proxy,
-                otp_callback=artifacts.otp_callback,
-                timeout=resolve_timeout(ctx.extra, ("anycap_oauth_timeout", "browser_oauth_timeout", "mail_otp_timeout"), 240),
-                chrome_path=str(extra.get("anycap_chrome_path", "") or ""),
-                cdp_url=str(extra.get("anycap_cdp_url", "") or ""),
                 log_fn=ctx.log,
             ),
             register_runner=lambda worker, ctx, artifacts: worker.run(
                 email=ctx.identity.email,
                 password=ctx.password or ctx.platform._make_random_password(),
+                otp_callback=artifacts.otp_callback,
             ),
             otp_spec=OtpSpec(
                 keyword="Auth0",
                 code_pattern=r"(?<!\d)(\d{6})(?!\d)",
                 wait_message="Waiting for AnyCap/Auth0 email verification code...",
                 success_label="AnyCap Auth0 OTP",
+                timeout=resolve_timeout(extra, ("anycap_otp_timeout", "anycap_oauth_timeout", "mail_otp_timeout"), 180),
             ),
-            use_captcha=False,
+            use_captcha=True,
+            use_executor=True,
         )
 
     def build_protocol_oauth_adapter(self):

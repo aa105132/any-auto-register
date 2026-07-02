@@ -56,6 +56,24 @@ def import_google_account_pool(body: GoogleAccountImportRequest):
     )
 
 
+# 注意：/release-stale 必须在 /{email}/... 路由之前声明，否则 "release-stale" 会被当成 email 捕获。
+@router.post("/release-stale")
+def release_stale_reserved(body: GoogleAccountStatusRequest | None = None):
+    """批量释放陈旧 reserved_platforms 锁（reserved 含但 registered 不含）。
+
+    body.reason 传平台名做过滤（留空则清所有陈旧锁）。执行前需确认无对应平台任务在跑。
+    """
+    pool = GoogleAccountPool()
+    platform_filter = str(getattr(body, "reason", "") or "").strip() if body else ""
+    affected = pool.release_stale(platform=platform_filter)
+    released = sum(len(platforms) for _, platforms in affected)
+    return {
+        "ok": True,
+        "released": released,
+        "affected": [{"email": email, "platform": p} for email, platforms in affected for p in platforms],
+    }
+
+
 @router.post("/{email}/invalid")
 def mark_google_account_invalid(email: str, body: GoogleAccountStatusRequest):
     pool = GoogleAccountPool()
